@@ -25,7 +25,9 @@ namespace TinyGPT.Core
 		}
 
 		public static Tensor ComputeSoftmaxLoss2(Tensor x, int expectedclass){
-			return x[expectedclass].negative().add(1);
+			Tensor squared = x.square();
+
+			return squared.sum().subtract(squared[expectedclass]).div(x.size(0) - 1).sqrt();
 		}
 	}
 }
