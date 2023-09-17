@@ -177,7 +177,7 @@ namespace TinyGPT.DecoderV1.Trainer
 							File.Replace(tempsav, save, null);
 						}
 						else{
-							notchatgpt.save(tempsav);
+							notchatgpt.save(save);
 						}
 						
 						
