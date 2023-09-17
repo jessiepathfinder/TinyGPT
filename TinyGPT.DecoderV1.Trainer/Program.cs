@@ -16,13 +16,16 @@ namespace TinyGPT.DecoderV1.Trainer
 	internal static class Program
 	{
 		//hyperparameters
-		private const int latentTokenSize = 1024;
+		private const int latentTokenSize = 256;
 		private const int unmaskedAttentionHeadsCount = 32;
 		private const int maskedAttentionHeadsCount = 32;
 		private const int maxContextSize = 1024;
 		private const int fullDataTransitionIndex = 3000;
 		private const int trainingBatches = 5000;
 		private const int trainingBatchSize = 256;
+		private const int transformerAttentionHeads = 16;
+		private const int transformerDepth = 2;
+		private const int predictorDepth = 5;
 
 		private static void Main(string[] args)
 		{
@@ -39,10 +42,14 @@ namespace TinyGPT.DecoderV1.Trainer
 				return;
 			}
 			int maxlen = 0;
-			foreach(string key in dict.Keys){
-				maxlen = Math.Max(maxlen, key.Length);
+			int tokenclasses = 0;
+			foreach(KeyValuePair<string, ushort> keyValuePair in dict){
+				maxlen = Math.Max(maxlen, keyValuePair.Key.Length);
+				tokenclasses = Math.Max(keyValuePair.Value, tokenclasses);
 			}
-			int tokenclasses = dict.Count + 2;
+
+			//3 magic token types
+			tokenclasses += 3;
 			Console.WriteLine("Loading ELI5 + WikiQA question answering dataset...");
 			string[][]? questionanswering = JsonConvert.DeserializeObject<string[][]>(File.ReadAllText(datadir + "QuestionAnswering.json"));
 			if(questionanswering is null){
@@ -118,20 +125,11 @@ namespace TinyGPT.DecoderV1.Trainer
 			Console.WriteLine("Initializing model...");
 			InitializeDeviceType(DeviceType.CUDA);
 			ModuleList<BERTDictionaryItem> dictionaryItems = new ModuleList<BERTDictionaryItem>();
-			ModuleList<Trident> unmaskedAttentionHeads = new ModuleList<Trident>();
-			ModuleList<Trident> maskedAttentionHeads = new ModuleList<Trident>();
-			for (int i = 0; i < tokenclasses; ++i){
+			for(int i = 0; i < tokenclasses; ++i){
 				dictionaryItems.Add(new BERTDictionaryItem("", latentTokenSize));
 			}
-			for(int i = 0; i < unmaskedAttentionHeadsCount; ++i){
-				unmaskedAttentionHeads.Add(new Trident("", latentTokenSize));
-			}
-			for (int i = 0; i < maskedAttentionHeadsCount; ++i)
-			{
-				maskedAttentionHeads.Add(new Trident("", latentTokenSize));
-			}
 			
-			FullGPTDecoderUnitV1 notchatgpt = new FullGPTDecoderUnitV1("TinyGPT", dictionaryItems, new GPTDecoderV1(unmaskedAttentionHeads, maskedAttentionHeads, latentTokenSize, tokenclasses, ""));
+			FullGPTDecoderUnitV1 notchatgpt = new FullGPTDecoderUnitV1("TinyGPT", dictionaryItems, new GPTDecoderV1(transformerDepth, transformerAttentionHeads, predictorDepth, latentTokenSize, tokenclasses, ""));
 			notchatgpt.to(CUDA, ScalarType.Float32);
 
 			Adam adam = new Adam(notchatgpt.parameters(), amsgrad: true);
@@ -158,11 +156,14 @@ namespace TinyGPT.DecoderV1.Trainer
 						ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2)];
 
 						int split = RandomNumberGenerator.GetInt32(example[0], example.Length - 1);
-						Span<ushort> view = example.AsSpan(1, split);
+						ushort backup = example[split];
+						example[split] = 3; //MASK token
+						Span<ushort> view = example.AsSpan(1, split + 1);
+
 						Tensor prob = notchatgpt.forward(view);
 
-						Tensor loss = Misc.ComputeSoftmaxLoss2(prob, example[split + 1]);
-
+						Tensor loss = Misc.ComputeSoftmaxLoss2(prob, backup);
+						example[split] = backup;
 						loss.backward();
 						totalloss += (float)loss.cpu();
 					}

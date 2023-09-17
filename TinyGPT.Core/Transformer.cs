@@ -8,6 +8,7 @@ using static TorchSharp.torch;
 using TorchSharp.Modules;
 using static TorchSharp.torch.nn;
 using System.Buffers;
+using System.Collections;
 
 namespace TinyGPT.Core
 {
@@ -54,16 +55,6 @@ namespace TinyGPT.Core
 		{
 			return input.add(weights.mul(index).add(biases).sin());
 		}
-		public static void EncodeWord2Vec(ModuleList<BERTDictionaryItem> list, ReadOnlySpan<ushort> span, Span<Tensor> outputs) {
-			int len = span.Length;
-			if (outputs.Length < len) {
-				throw new ArgumentOutOfRangeException("output can't be smaller than input");
-			}
-			for (int ctr = 0; ctr < len; ++ctr)
-			{
-				outputs[ctr] = list[span[ctr] + 2].parameters1;
-			}
-		}
 		public static void EncodePositionV2(ReadOnlySpan<Tensor> span, Span<Tensor> outputs, Tensor weights, Tensor biases)
 		{
 			int len = span.Length;
@@ -104,53 +95,8 @@ namespace TinyGPT.Core
 			return pos;
 		}
 		private static readonly ArrayPool<(Tensor, Tensor, Tensor)> arrayPool1 = ArrayPool<(Tensor, Tensor, Tensor)>.Create();
-		public static void ComputeSingleHeadAttention(Trident trident, ReadOnlySpan<Tensor> inputs, Span<Tensor> outputs)
-		{
-			int limit = inputs.Length;
-			if(limit == 0){
-				return;
-			}
-			if(outputs.Length < limit) {
-				throw new IndexOutOfRangeException("outputs cannot be smaller than input values");
-			}
-			(Tensor, Tensor, Tensor)[] tmpcache = arrayPool1.Rent(limit);
-			for(int i = 0; i < limit; ++i){
-				tmpcache[i] = trident.forward(inputs[i]);
-			}
-			try{
-				
-				for (int i = 0; i < limit; ++i)
-				{
-					(Tensor query, Tensor key, _) = tmpcache[i];
-					Tensor z = inputs[i];
-					for (int c = 0; c < limit; ++c)
-					{
-						(_, _, Tensor value) = tmpcache[c];
-						Tensor res = ScaledDotProductAttention(query, key, value);
-						z = z.add(res);
-					}
-					outputs[i] = z;
-				}
-			} finally{
-				ThreadPool.QueueUserWorkItem((((Tensor, Tensor, Tensor)[] tmpcache, int limit1) x) =>
-				{
-					for(int i = 0;i < x.limit1; ++i){
-#pragma warning disable CS8619 // Nullability of reference types in value doesn't match target type.
-						x.tmpcache[i] = (null, null, null);
-#pragma warning restore CS8619 // Nullability of reference types in value doesn't match target type.
-					}
-					arrayPool1.Return(x.tmpcache, false);
-				}, (tmpcache, limit), true);
-			}
-		}
 		private static readonly long[] shape1 = { -1 };
-		private static readonly long[] shape2 = { -1, 1 };
-
-
-		public static Tensor ScaledDotProductAttention(Tensor query, Tensor key, Tensor value)
-		{
-			return value.mul(query.dot(key).div(MathF.Sqrt(query.size(0))).sigmoid());
-		}
+		private static readonly long[] shape2 = { 1, -1 };
 
 
 	}
