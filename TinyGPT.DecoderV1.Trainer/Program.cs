@@ -18,7 +18,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		//hyperparameters
 		private const int latentTokenSize = 256;
 		private const int maxContextSize = 1024;
-		private const int trainingBatches = 500;
+		private const int trainingBatches = 1000;
 		private const int trainingBatchSize = 256;
 		private const int transformerAttentionHeads = 16;
 		private const int transformerDepth = 2;
@@ -129,7 +129,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			
 			FullGPTDecoderUnitV1 notchatgpt = new FullGPTDecoderUnitV1("TinyGPT", dictionaryItems, new GPTDecoderV1(transformerDepth, transformerAttentionHeads, predictorDepth, latentTokenSize, tokenclasses, ""));
 			notchatgpt.to(CUDA, ScalarType.Float32);
-			Adam adam = new Adam(notchatgpt.parameters(), 0.0001, 0.95, amsgrad: true);
+			Adam adam = new Adam(notchatgpt.parameters(), amsgrad: true);
 			adam.to(CUDA);
 			notchatgpt.train(true);
 
@@ -143,7 +143,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			float bestloss = float.PositiveInfinity;
 			string tempsav = save + ".temp";
 			Queue<string> savequeue = new Queue<string>();
-			for (int batchid = 0, savecooldown = 16; batchid < trainingBatches; ++batchid, --savecooldown)
+			for (int batchid = 0, savecooldown = 8; batchid < trainingBatches; ++batchid, --savecooldown)
 			{
 				
 				Console.WriteLine("Start training batch #" + batchid);
@@ -176,7 +176,7 @@ namespace TinyGPT.DecoderV1.Trainer
 						if(savequeue.Count > 5){
 							File.Delete(savequeue.Dequeue());
 						}
-						savecooldown = 16;
+						savecooldown = 8;
 
 
 					}
