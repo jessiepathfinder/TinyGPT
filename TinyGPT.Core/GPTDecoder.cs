@@ -137,7 +137,7 @@ namespace TinyGPT.Core
 				tensor = denseStep.forward(tensor);
 			}
 
-			return final.forward(tensor);
+			return final.forward(tensor).softmax(-1);
 		}
 	}
 }
