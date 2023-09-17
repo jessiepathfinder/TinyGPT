@@ -21,7 +21,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int maskedAttentionHeadsCount = 32;
 		private const int maxContextSize = 1024;
 		private const int fullDataTransitionIndex = 3000;
-		private const int trainingBatches = 5000;
+		private const int trainingBatches = 500;
 		private const int trainingBatchSize = 256;
 		private const int transformerAttentionHeads = 16;
 		private const int transformerDepth = 2;
@@ -77,9 +77,10 @@ namespace TinyGPT.DecoderV1.Trainer
 					while (true)
 					{
 						int a = Interlocked.Increment(ref loadprogress);
-						if(a >= wqlength){
+						if(a > wqlength){
 							return;
 						}
+						a -= 1;
 						string[] pair = questionanswering[a];
 						
 						Span<ushort> encbuffer2 = encbuffer.Slice(1, maxContextSize);
@@ -131,8 +132,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			
 			FullGPTDecoderUnitV1 notchatgpt = new FullGPTDecoderUnitV1("TinyGPT", dictionaryItems, new GPTDecoderV1(transformerDepth, transformerAttentionHeads, predictorDepth, latentTokenSize, tokenclasses, ""));
 			notchatgpt.to(CUDA, ScalarType.Float32);
-
-			Adam adam = new Adam(notchatgpt.parameters(), amsgrad: true);
+			Adam adam = new Adam(notchatgpt.parameters(), 0.0001, 0.95, amsgrad: true);
 			adam.to(CUDA);
 			notchatgpt.train(true);
 
@@ -143,16 +143,17 @@ namespace TinyGPT.DecoderV1.Trainer
 			}
 
 			Console.WriteLine("Start training...");
-			for (int i = 0; i < trainingBatches; ++i)
+			float bestloss = float.PositiveInfinity;
+			string tempsav = save + ".temp";
+			for (int batchid = 0; batchid < trainingBatches; ++batchid)
 			{
 				
-				Console.WriteLine("Start training batch #" + i);
+				Console.WriteLine("Start training batch #" + batchid);
 				using (var d = NewDisposeScope())
 				{
 					adam.zero_grad();
 					float totalloss = 0;
 					for(int z = 0; z < trainingBatchSize; ++z){
-						
 						ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2)];
 
 						int split = RandomNumberGenerator.GetInt32(example[0], example.Length - 1);
@@ -168,11 +169,23 @@ namespace TinyGPT.DecoderV1.Trainer
 						totalloss += (float)loss.cpu();
 					}
 					Console.WriteLine("Batch total loss: " + totalloss);
-					
+					if(totalloss < bestloss){
+						Console.WriteLine("Saving best policy...");
+						bestloss = totalloss;
+						if(File.Exists(save)){
+							notchatgpt.Save(tempsav);
+							File.Replace(tempsav, save, null);
+						}
+						else{
+							notchatgpt.save(tempsav);
+						}
+						
+						
+					}
+
 					adam.step();
 				}
 			}
-			notchatgpt.Save(save);
 
 		}
 	}
