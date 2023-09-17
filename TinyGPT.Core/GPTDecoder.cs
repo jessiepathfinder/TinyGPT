@@ -13,7 +13,19 @@ using Parameter = TorchSharp.Modules.Parameter;
 
 namespace TinyGPT.Core
 {
-	public sealed class FullGPTDecoderUnitV1 : Module<ReadOnlyMemory<ushort>, Tensor>
+	public abstract class FullGPTDecoderUnit : Module<ReadOnlyMemory<ushort>, Tensor>
+	{
+		protected FullGPTDecoderUnit(string name) : base(name)
+		{
+		}
+
+		protected FullGPTDecoderUnit(nint handle, nint boxedHandle) : base(handle, boxedHandle)
+		{
+		}
+
+		public abstract Tensor forward(ReadOnlySpan<ushort> input);
+	}
+	public sealed class FullGPTDecoderUnitV1 : FullGPTDecoderUnit
 	{
 		private static readonly ArrayPool<Tensor> arrayPool = ArrayPool<Tensor>.Create();
 		private readonly ModuleList<BERTDictionaryItem> dictionaryItems;
@@ -30,7 +42,7 @@ namespace TinyGPT.Core
 		{
 			return forward(input.Span);
 		}
-		public Tensor forward(ReadOnlySpan<ushort> input)
+		public override Tensor forward(ReadOnlySpan<ushort> input)
 		{
 			int len = input.Length;
 			if(len == 0){

@@ -17,10 +17,7 @@ namespace TinyGPT.DecoderV1.Trainer
 	{
 		//hyperparameters
 		private const int latentTokenSize = 256;
-		private const int unmaskedAttentionHeadsCount = 32;
-		private const int maskedAttentionHeadsCount = 32;
 		private const int maxContextSize = 1024;
-		private const int fullDataTransitionIndex = 3000;
 		private const int trainingBatches = 500;
 		private const int trainingBatchSize = 256;
 		private const int transformerAttentionHeads = 16;
@@ -145,7 +142,8 @@ namespace TinyGPT.DecoderV1.Trainer
 			Console.WriteLine("Start training...");
 			float bestloss = float.PositiveInfinity;
 			string tempsav = save + ".temp";
-			for (int batchid = 0; batchid < trainingBatches; ++batchid)
+			Queue<string> savequeue = new Queue<string>();
+			for (int batchid = 0, savecooldown = 16; batchid < trainingBatches; ++batchid, --savecooldown)
 			{
 				
 				Console.WriteLine("Start training batch #" + batchid);
@@ -158,7 +156,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 						int split = RandomNumberGenerator.GetInt32(example[0], example.Length - 1);
 						ushort backup = example[split];
-						example[split] = 3; //MASK token
+						example[split] = 2; //MASK token
 						Span<ushort> view = example.AsSpan(1, split + 1);
 
 						Tensor prob = notchatgpt.forward(view);
@@ -169,18 +167,18 @@ namespace TinyGPT.DecoderV1.Trainer
 						totalloss += (float)loss.cpu();
 					}
 					Console.WriteLine("Batch total loss: " + totalloss);
-					if(totalloss < bestloss){
+					if(totalloss < bestloss & savecooldown < 0){
 						Console.WriteLine("Saving best policy...");
 						bestloss = totalloss;
-						if(File.Exists(save)){
-							notchatgpt.Save(tempsav);
-							File.Replace(tempsav, save, null);
+						string savename = save + batchid;
+						notchatgpt.save(savename);
+						savequeue.Enqueue(savename);
+						if(savequeue.Count > 5){
+							File.Delete(savequeue.Dequeue());
 						}
-						else{
-							notchatgpt.save(save);
-						}
-						
-						
+						savecooldown = 16;
+
+
 					}
 
 					adam.step();

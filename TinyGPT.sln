@@ -5,7 +5,9 @@ VisualStudioVersion = 17.7.33920.267
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.Core", "TinyGPT.Core\TinyGPT.Core.csproj", "{7885523A-1710-4EB7-9BAE-23F0A67BD7DB}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TinyGPT.DecoderV1.Trainer", "TinyGPT.DecoderV1.Trainer\TinyGPT.DecoderV1.Trainer.csproj", "{EAA4F7F3-37C9-42CE-902C-700225F63FCD}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.DecoderV1.Trainer", "TinyGPT.DecoderV1.Trainer\TinyGPT.DecoderV1.Trainer.csproj", "{EAA4F7F3-37C9-42CE-902C-700225F63FCD}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TinyGPT.Chatbot", "TinyGPT.Chatbot\TinyGPT.Chatbot.csproj", "{1EECBA9A-018D-4833-B1B0-B7D546F54214}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -21,6 +23,10 @@ Global
 		{EAA4F7F3-37C9-42CE-902C-700225F63FCD}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{EAA4F7F3-37C9-42CE-902C-700225F63FCD}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{EAA4F7F3-37C9-42CE-902C-700225F63FCD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1EECBA9A-018D-4833-B1B0-B7D546F54214}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1EECBA9A-018D-4833-B1B0-B7D546F54214}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1EECBA9A-018D-4833-B1B0-B7D546F54214}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1EECBA9A-018D-4833-B1B0-B7D546F54214}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
