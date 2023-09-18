@@ -21,8 +21,11 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int trainingBatches = 1000;
 		private const int trainingBatchSize = 256;
 		private const int transformerAttentionHeads = 16;
-		private const int transformerDepth = 3;
 		private const int predictorDepth = 5;
+		private const int attentionLatentSize = 64;
+		private const int predictorHiddenSize = 1024;
+		private const int predictorFinalHiddenSize = 512;
+
 
 		private static void Main(string[] args)
 		{
@@ -127,7 +130,7 @@ namespace TinyGPT.DecoderV1.Trainer
 				dictionaryItems.Add(new BERTDictionaryItem("", latentTokenSize));
 			}
 			
-			FullGPTDecoderUnitV1 notchatgpt = new FullGPTDecoderUnitV1("TinyGPT", dictionaryItems, new GPTDecoderV1(transformerDepth, transformerAttentionHeads, predictorDepth, latentTokenSize, tokenclasses, ""));
+			FullGPTDecoderUnitV1 notchatgpt = new FullGPTDecoderUnitV1("TinyGPT", dictionaryItems, new GPTDecoderV1(transformerAttentionHeads, predictorDepth, latentTokenSize, tokenclasses, attentionLatentSize, predictorHiddenSize, predictorFinalHiddenSize, ""));
 			notchatgpt.to(CUDA, ScalarType.Float32);
 			Adam adam = new Adam(notchatgpt.parameters(), amsgrad: true);
 			adam.to(CUDA);
@@ -160,6 +163,7 @@ namespace TinyGPT.DecoderV1.Trainer
 						ushort backup = example[split];
 						example[split] = 2; //MASK token
 						Span<ushort> view = example.AsSpan(1, split + 1);
+						using var d2 = NewDisposeScope();
 
 						Tensor prob = notchatgpt.forward(view);
 						classexpect[backup] = 1;

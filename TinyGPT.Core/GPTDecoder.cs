@@ -73,26 +73,39 @@ namespace TinyGPT.Core
 		private readonly Parameter positionBias;
 
 		//transformer
-		private readonly ModuleList<ModuleList<Trident>> transformerStages = new ModuleList<ModuleList<Trident>>();
+		private readonly ModuleList<Tridentv2> attentionHeads = new ModuleList<Tridentv2>();
 
 		//predictor
-		private readonly ModuleList<DenseStep> predictorStages = new ModuleList<DenseStep>();
+		private readonly ModuleList<Module<Tensor, Tensor>> predictorStages = new ModuleList<Module<Tensor, Tensor>>();
 		private readonly Linear final;
 
-		public GPTDecoderV1(int transformerDepth, int attentionHeads, int predictorDepth, int latentTokenSize, int tokenTypes, string name) : base(name)
+		public GPTDecoderV1(int attentionHeads1, int predictorDepth, int latentTokenSize, int tokenTypes, int attentionLatentSize, int predictorHiddenSize, int predictorFinalHiddenSize, string name) : base(name)
 		{
-
-			for(int i = 0; i < transformerDepth; ++i){
-				ModuleList<Trident> trident = new ModuleList<Trident>();
-				for(int z = 0; z < attentionHeads; ++z){
-					trident.Add(new Trident("", latentTokenSize));
-				}
-				transformerStages.Add(trident);
+			if (attentionHeads1 < 1) {
+				throw new ArgumentOutOfRangeException(nameof(attentionHeads));
 			}
+			if (latentTokenSize < 1)
+			{
+				throw new ArgumentOutOfRangeException(nameof(latentTokenSize));
+			}
+			if (tokenTypes < 1)
+			{
+				throw new ArgumentOutOfRangeException(nameof(tokenTypes));
+			}
+
+			for (int i = 0; i < attentionHeads1; ++i){
+				attentionHeads.Add(new Tridentv2("", latentTokenSize, attentionLatentSize));
+			}
+			int densewidth = attentionLatentSize * attentionHeads1;
+			int prevsize = densewidth;
+
 			for (int i = 0; i < predictorDepth; ++i)
 			{
-				predictorStages.Add(new DenseStep(latentTokenSize, latentTokenSize, ""));
+				predictorStages.Add(new DenseStepV2(prevsize, predictorHiddenSize, ""));
+				prevsize = predictorHiddenSize;
 			}
+			predictorStages.Add(new DenseStepV2(prevsize, predictorFinalHiddenSize, ""));
+			predictorStages.Add(Linear(predictorFinalHiddenSize, tokenTypes));
 
 
 			final = Linear(latentTokenSize, tokenTypes);
@@ -123,21 +136,17 @@ namespace TinyGPT.Core
 				ta[i] = input[i].reshape(shape2);
 			}
 			Tensor tensor = cat(ta, 0);
-			foreach (ModuleList<Trident> tridents in transformerStages)
-			{
-				Tensor tensor1 = tensor;
-				foreach(Trident trident in tridents) {
-					(Tensor query, Tensor key, Tensor value) = trident.forward(tensor);
-					tensor1 = tensor1.add(functional.scaled_dot_product_attention(query, key, value));
-				}
-				tensor = tensor1;
+			int attentionCount = attentionHeads.Count;
+			Tensor[] tb = new Tensor[attentionCount];
+			for(int i = 0, lm1 = len - 1; i < attentionCount; ++i) {
+				(Tensor x, Tensor y, Tensor z) = attentionHeads[i].forward(tensor);
+				tb[i] = functional.scaled_dot_product_attention(x, y, z)[lm1];
 			}
-			tensor = tensor[len - 1].reshape(shape1);
-			foreach(DenseStep denseStep in predictorStages){
-				tensor = denseStep.forward(tensor);
+			tensor = cat(tb, 0);
+			foreach(Module<Tensor, Tensor> module in predictorStages){
+				tensor = module.forward(tensor);
 			}
-
-			return final.forward(tensor).softmax(-1);
+			return softmax(tensor, -1);
 		}
 	}
 }

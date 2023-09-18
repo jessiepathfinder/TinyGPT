@@ -29,5 +29,11 @@ namespace TinyGPT.Core
 
 			return squared.sum().subtract(squared[expectedclass]).sqrt();
 		}
+		public static Tensor ComputeSigmoidFinalLoss(Tensor x, int expectedclass)
+		{
+			Tensor squared = x.square();
+
+			return squared.sum().subtract(squared[expectedclass]).add(x[expectedclass].sub(1).square()).div(x.size(0)).sqrt();
+		}
 	}
 }
