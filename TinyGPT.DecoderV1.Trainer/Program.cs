@@ -21,7 +21,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int trainingBatches = 1000;
 		private const int trainingBatchSize = 256;
 		private const int transformerAttentionHeads = 16;
-		private const int transformerDepth = 2;
+		private const int transformerDepth = 3;
 		private const int predictorDepth = 5;
 
 		private static void Main(string[] args)
@@ -105,7 +105,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 						if ((a & 4095) == 4095)
 						{
-							Console.WriteLine(sb.Append(a).Append(progresstail).ToString());
+							Console.WriteLine(sb.Append(a).Append(progresstail + 3).ToString());
 							sb.Remove(10, sb.Length - 10);
 						}
 						
@@ -131,6 +131,8 @@ namespace TinyGPT.DecoderV1.Trainer
 			notchatgpt.to(CUDA, ScalarType.Float32);
 			Adam adam = new Adam(notchatgpt.parameters(), amsgrad: true);
 			adam.to(CUDA);
+			CrossEntropyLoss crossEntropyLoss = new CrossEntropyLoss(reduction: nn.Reduction.Sum);
+			crossEntropyLoss.to(CUDA, ScalarType.Float32);
 			notchatgpt.train(true);
 
 			Console.WriteLine("Waiting for question answering dataset tokenization to complete...");
@@ -141,8 +143,8 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			Console.WriteLine("Start training...");
 			float bestloss = float.PositiveInfinity;
-			string tempsav = save + ".temp";
 			Queue<string> savequeue = new Queue<string>();
+			float[] classexpect = new float[tokenclasses];
 			for (int batchid = 0, savecooldown = 8; batchid < trainingBatches; ++batchid, --savecooldown)
 			{
 				
@@ -160,10 +162,12 @@ namespace TinyGPT.DecoderV1.Trainer
 						Span<ushort> view = example.AsSpan(1, split + 1);
 
 						Tensor prob = notchatgpt.forward(view);
+						classexpect[backup] = 1;
 
-						Tensor loss = Misc.ComputeSoftmaxLoss2(prob, backup);
+						Tensor loss = crossEntropyLoss.forward(prob, tensor(classexpect).to(CUDA));
+						classexpect[backup] = 0;
 						example[split] = backup;
-						loss.backward();
+						loss.backward(create_graph: true, retain_graph: true);
 						totalloss += (float)loss.cpu();
 					}
 					Console.WriteLine("Batch total loss: " + totalloss);
