@@ -108,7 +108,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 						if ((a & 4095) == 4095)
 						{
-							Console.WriteLine(sb.Append(a).Append(progresstail + 3).ToString());
+							Console.WriteLine(sb.Append(a).Append(progresstail).ToString());
 							sb.Remove(10, sb.Length - 10);
 						}
 						

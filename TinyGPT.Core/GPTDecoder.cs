@@ -77,7 +77,6 @@ namespace TinyGPT.Core
 
 		//predictor
 		private readonly ModuleList<Module<Tensor, Tensor>> predictorStages = new ModuleList<Module<Tensor, Tensor>>();
-		private readonly Linear final;
 
 		public GPTDecoderV1(int attentionHeads1, int predictorDepth, int latentTokenSize, int tokenTypes, int attentionLatentSize, int predictorHiddenSize, int predictorFinalHiddenSize, string name) : base(name)
 		{
@@ -107,9 +106,6 @@ namespace TinyGPT.Core
 			predictorStages.Add(new DenseStepV2(prevsize, predictorFinalHiddenSize, ""));
 			predictorStages.Add(Linear(predictorFinalHiddenSize, tokenTypes));
 
-
-			final = Linear(latentTokenSize, tokenTypes);
-
 			positionBias = Parameter(randn(latentTokenSize));
 			positionWeights = Parameter(randn(latentTokenSize));
 
@@ -138,15 +134,15 @@ namespace TinyGPT.Core
 			Tensor tensor = cat(ta, 0);
 			int attentionCount = attentionHeads.Count;
 			Tensor[] tb = new Tensor[attentionCount];
-			for(int i = 0, lm1 = len - 1; i < attentionCount; ++i) {
+			for (int i = 0, lm1 = len - 1; i < attentionCount; ++i) {
 				(Tensor x, Tensor y, Tensor z) = attentionHeads[i].forward(tensor);
 				tb[i] = functional.scaled_dot_product_attention(x, y, z)[lm1];
 			}
-			tensor = cat(tb, 0);
-			foreach(Module<Tensor, Tensor> module in predictorStages){
+			tensor = cat(tb, 0).reshape(shape2);
+			foreach (Module<Tensor, Tensor> module in predictorStages){
 				tensor = module.forward(tensor);
 			}
-			return softmax(tensor, -1);
+			return softmax(tensor.reshape(shape1), -1);
 		}
 	}
 }
