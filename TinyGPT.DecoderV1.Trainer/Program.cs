@@ -167,7 +167,7 @@ namespace TinyGPT.DecoderV1.Trainer
 						Tensor loss = crossEntropyLoss.forward(prob, tensor(classexpect).to(CUDA));
 						classexpect[backup] = 0;
 						example[split] = backup;
-						loss.backward(create_graph: true, retain_graph: true);
+						loss.backward();
 						totalloss += (float)loss.cpu();
 					}
 					Console.WriteLine("Batch total loss: " + totalloss);
