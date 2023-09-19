@@ -140,13 +140,13 @@ namespace TinyGPT.Core
 			Tensor lasttensor = input[lm1].reshape(shape2);
 			for (int i = 0; i < attentionCount; ++i) {
 				(Tensor x, Tensor y, Tensor z) = attentionHeads[i].forward(tensor);
-				tb[i] = functional.scaled_dot_product_attention(x, y, z)[lm1].reshape(shape2).add(attentionBypasses[i].forward(lasttensor)).reshape(shape1);
+				tb[i] = functional.scaled_dot_product_attention(x, y, z)[lm1].reshape(shape2).add(attentionBypasses[i].forward(lasttensor));
 			}
-			tensor = cat(tb, 0).reshape(shape2);
+			tensor = cat(tb, 1);
 			foreach (Module<Tensor, Tensor> module in predictorStages){
 				tensor = module.forward(tensor);
 			}
-			return softmax(tensor.reshape(shape1), -1);
+			return softmax(tensor.reshape(shape1), 0);
 		}
 	}
 }

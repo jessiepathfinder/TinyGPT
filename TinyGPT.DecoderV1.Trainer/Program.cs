@@ -19,14 +19,14 @@ namespace TinyGPT.DecoderV1.Trainer
 	{
 		//hyperparameters
 		private const int latentTokenSize = 256;
-		private const int maxContextSize = 1024;
-		private const int trainingBatches = 1000;
-		private const int trainingMicroBatchSize = 512;
+		private const int maxContextSize = 2048;
+		private const int trainingBatches = 10000;
+		private const int trainingMicroBatchSize = 256;
 		private const int transformerAttentionHeads = 16;
-		private const int predictorDepth = 5;
-		private const int attentionLatentSize = 64;
+		private const int predictorDepth = 2;
+		private const int attentionLatentSize = 128;
 		private const int predictorHiddenSize = 1024;
-		private const int predictorFinalHiddenSize = 512;
+		private const int predictorFinalHiddenSize = 1024;
 
 
 		private static void Main(string[] args)
@@ -106,7 +106,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 					flush:
 						encbuffer[0] = encsize;
-						tokenized[a] = encbuffer[..size1].ToArray();
+						tokenized[a] = encbuffer[..(size1 + 1)].ToArray();
 
 						if ((a & 4095) == 4095)
 						{
@@ -136,7 +136,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			notchatgpt.to(CUDA, ScalarType.Float32);
 
 			Adam adam = new Adam(notchatgpt.parameters(), amsgrad: true);
-			//LRScheduler learningRateScheduler = ExponentialLR(adam);
+			LRScheduler learningRateScheduler = ExponentialLR(adam, 0.98, 1, true);
 
 			adam.to(CUDA);
 			CrossEntropyLoss crossEntropyLoss = new CrossEntropyLoss(reduction: nn.Reduction.Sum);
@@ -157,15 +157,10 @@ namespace TinyGPT.DecoderV1.Trainer
 			Tensor[] actualTensors = new Tensor[trainingMicroBatchSize];
 			int maxgcgen = GC.MaxGeneration;
 			for (int z = 0, savecooldown = 5; z < trainingBatches; ++z, --savecooldown)
-			{
-				Console.WriteLine("Start training batch #" + z);
-				using (var d = NewDisposeScope())
-				{
-					adam.zero_grad();
-				}
-				
+			{				
 				Console.WriteLine("Forward pass batch #" + z);
 				using var d2 = NewDisposeScope();
+				adam.zero_grad();
 				for (int k = 0; k < trainingMicroBatchSize; ++k)
 				{
 					ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2)];
@@ -210,6 +205,7 @@ namespace TinyGPT.DecoderV1.Trainer
 				}
 				Console.WriteLine("Backpropagate batch #" + z);
 				loss.backward();
+				learningRateScheduler.step();
 				adam.step();
 			}
 

@@ -61,7 +61,7 @@ namespace TinyGPT.Chatbot
 							dictionaryItems.Add(new BERTDictionaryItem("", 256));
 						}
 
-						themodel = new FullGPTDecoderUnitV1("TinyGPT", dictionaryItems, new GPTDecoderV1(16, 5, 256, tokenclasses, 64, 1024, 512, ""));
+						themodel = new FullGPTDecoderUnitV1("TinyGPT", dictionaryItems, new GPTDecoderV1(16, 2, 256, tokenclasses, 128, 1024, 1024, ""));
 						maxcontext = 1024;
 					}
 					break;
