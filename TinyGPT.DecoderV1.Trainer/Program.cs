@@ -159,7 +159,6 @@ namespace TinyGPT.DecoderV1.Trainer
 			for (int z = 0, savecooldown = 5; z < trainingBatches; ++z, --savecooldown)
 			{
 				Console.WriteLine("Start training batch #" + z);
-				float totalloss = 0;
 				using (var d = NewDisposeScope())
 				{
 					adam.zero_grad();
@@ -190,16 +189,15 @@ namespace TinyGPT.DecoderV1.Trainer
 #pragma warning restore CS8625 // Cannot convert null literal to non-nullable reference type.
 				}
 				float totalloss2 = loss.cpu().ToSingle();
-				Console.WriteLine("Minibatch loss: " + totalloss2);
+				Console.WriteLine("Batch loss: " + totalloss2);
 
 				Console.WriteLine("Full garbage collection");
 				GC.Collect(maxgcgen, GCCollectionMode.Forced, true, false);
 				GC.WaitForPendingFinalizers();
-				Console.WriteLine("Total loss: " + totalloss);
-				if (totalloss < bestloss & savecooldown < 0)
+				if (totalloss2 < bestloss & savecooldown < 0)
 				{
 					Console.WriteLine("Saving best policy...");
-					bestloss = totalloss;
+					bestloss = totalloss2;
 					string savename = save + z;
 					notchatgpt.save(savename);
 					savequeue.Enqueue(savename);
