@@ -95,7 +95,7 @@ namespace TinyGPT.Core
 
 			for (int i = 0; i < attentionHeads1; ++i){
 				attentionHeads.Add(new Tridentv2("", latentTokenSize, attentionLatentSize));
-				attentionBypasses.Add(new DenseStepV2(latentTokenSize, attentionLatentSize, ""));
+				attentionBypasses.Add(new DenseStepV2(latentTokenSize, attentionLatentSize, false, 1, ""));
 			}
 			int densewidth = attentionLatentSize * attentionHeads1;
 			int prevsize = densewidth;
@@ -105,8 +105,8 @@ namespace TinyGPT.Core
 				predictorStages.Add(new DenseStepV2(prevsize, predictorHiddenSize, ""));
 				prevsize = predictorHiddenSize;
 			}
-			predictorStages.Add(new DenseStepV2(prevsize, predictorFinalHiddenSize, false, ""));
-			predictorStages.Add(Linear(predictorFinalHiddenSize, tokenTypes));
+			predictorStages.Add(new DenseStepV2(prevsize, predictorFinalHiddenSize, ""));
+			predictorStages.Add(Linear(predictorFinalHiddenSize, tokenTypes, false));
 
 			positionBias = Parameter(randn(latentTokenSize));
 			positionWeights = Parameter(randn(latentTokenSize));

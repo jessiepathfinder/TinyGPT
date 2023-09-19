@@ -46,7 +46,7 @@ namespace TinyGPT.Chatbot
 			Console.WriteLine("Loading model...");
 			bool usecuda = cuda_is_available();
 			if( usecuda ) {
-				InitializeDeviceType(TorchSharp.DeviceType.CUDA);
+				InitializeDeviceType(DeviceType.CUDA);
 			} else{
 				Console.WriteLine("WARNING: Your computer does not have a NVIDIA CUDA Graphics Card, or lacks the needed graphics drivers (I will be very slow)");
 			}

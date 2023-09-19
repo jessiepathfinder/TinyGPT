@@ -1,5 +1,6 @@
 ﻿using Newtonsoft.Json;
 using System.Collections.Concurrent;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Schema;
@@ -9,6 +10,7 @@ using TorchSharp.Modules;
 using static TinyGPT.Core.GPTDecoderV1;
 using static TorchSharp.torch;
 using static TorchSharp.torch.optim;
+using static TorchSharp.torch.optim.lr_scheduler;
 using Transformer = TinyGPT.Core.Transformer;
 
 namespace TinyGPT.DecoderV1.Trainer
@@ -19,7 +21,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int latentTokenSize = 256;
 		private const int maxContextSize = 1024;
 		private const int trainingBatches = 1000;
-		private const int trainingBatchSize = 256;
+		private const int trainingMicroBatchSize = 512;
 		private const int transformerAttentionHeads = 16;
 		private const int predictorDepth = 5;
 		private const int attentionLatentSize = 64;
@@ -37,13 +39,13 @@ namespace TinyGPT.DecoderV1.Trainer
 			}
 			Console.WriteLine("Loading dictionary...");
 			IReadOnlyDictionary<string, ushort>? dict = JsonConvert.DeserializeObject<IReadOnlyDictionary<string, ushort>>(File.ReadAllText(datadir + "encoder.json"));
-			if(dict is null){
+			if (dict is null) {
 				Console.WriteLine("Null encoder dictionary");
 				return;
 			}
 			int maxlen = 0;
 			int tokenclasses = 0;
-			foreach(KeyValuePair<string, ushort> keyValuePair in dict){
+			foreach (KeyValuePair<string, ushort> keyValuePair in dict) {
 				maxlen = Math.Max(maxlen, keyValuePair.Key.Length);
 				tokenclasses = Math.Max(keyValuePair.Value, tokenclasses);
 			}
@@ -52,14 +54,14 @@ namespace TinyGPT.DecoderV1.Trainer
 			tokenclasses += 3;
 			Console.WriteLine("Loading ELI5 + WikiQA question answering dataset...");
 			string[][]? questionanswering = JsonConvert.DeserializeObject<string[][]>(File.ReadAllText(datadir + "QuestionAnswering.json"));
-			if(questionanswering is null){
+			if (questionanswering is null) {
 				Console.WriteLine("Null question answering dataset");
 				return;
 			}
 			int wqlength = questionanswering.Length;
 
 			Console.WriteLine("Starting dataset tokenizers...");
-			
+
 			ushort[][] tokenized = new ushort[wqlength][];
 			int threads = Environment.ProcessorCount;
 			int loadprogress = 0;
@@ -67,22 +69,22 @@ namespace TinyGPT.DecoderV1.Trainer
 			int wqlen2 = wqlength;
 			string progresstail = new StringBuilder("/").Append(wqlength).Append(" question-answer pairs").ToString();
 
-			for (int z = 0; z < threads; ++z){
+			for (int z = 0; z < threads; ++z) {
 				int az = z;
 				Thread thread = new Thread(() =>
 				{
 					StringBuilder sb = new StringBuilder("Tokenized ");
 					Span<ushort> encbuffer = stackalloc ushort[maxContextSize + 1];
-					
+
 					while (true)
 					{
 						int a = Interlocked.Increment(ref loadprogress);
-						if(a > wqlength){
+						if (a > wqlength) {
 							return;
 						}
 						a -= 1;
 						string[] pair = questionanswering[a];
-						
+
 						Span<ushort> encbuffer2 = encbuffer.Slice(1, maxContextSize);
 						int size1 = Transformer.Tokenize(dict, encbuffer2, pair[0], maxlen);
 						ushort encsize = (ushort)Math.Min(size1 + 1, maxContextSize - 1);
@@ -111,7 +113,7 @@ namespace TinyGPT.DecoderV1.Trainer
 							Console.WriteLine(sb.Append(a).Append(progresstail).ToString());
 							sb.Remove(10, sb.Length - 10);
 						}
-						
+
 					}
 				});
 				thread.Name = "Data loader thread #" + z;
@@ -120,19 +122,22 @@ namespace TinyGPT.DecoderV1.Trainer
 				thread.Start();
 			}
 
-			
+
 
 
 			Console.WriteLine("Initializing model...");
 			InitializeDeviceType(DeviceType.CUDA);
 			ModuleList<BERTDictionaryItem> dictionaryItems = new ModuleList<BERTDictionaryItem>();
-			for(int i = 0; i < tokenclasses; ++i){
+			for (int i = 0; i < tokenclasses; ++i) {
 				dictionaryItems.Add(new BERTDictionaryItem("", latentTokenSize));
 			}
-			
+
 			FullGPTDecoderUnitV1 notchatgpt = new FullGPTDecoderUnitV1("TinyGPT", dictionaryItems, new GPTDecoderV1(transformerAttentionHeads, predictorDepth, latentTokenSize, tokenclasses, attentionLatentSize, predictorHiddenSize, predictorFinalHiddenSize, ""));
 			notchatgpt.to(CUDA, ScalarType.Float32);
+
 			Adam adam = new Adam(notchatgpt.parameters(), amsgrad: true);
+			//LRScheduler learningRateScheduler = ExponentialLR(adam);
+
 			adam.to(CUDA);
 			CrossEntropyLoss crossEntropyLoss = new CrossEntropyLoss(reduction: nn.Reduction.Sum);
 			crossEntropyLoss.to(CUDA, ScalarType.Float32);
@@ -147,50 +152,66 @@ namespace TinyGPT.DecoderV1.Trainer
 			Console.WriteLine("Start training...");
 			float bestloss = float.PositiveInfinity;
 			Queue<string> savequeue = new Queue<string>();
-			float[] classexpect = new float[tokenclasses];
-			for (int batchid = 0, savecooldown = 8; batchid < trainingBatches; ++batchid, --savecooldown)
+			long[] shape1 = new long[] {1, -1};
+			long[] expectedTensors = new long[trainingMicroBatchSize];
+			Tensor[] actualTensors = new Tensor[trainingMicroBatchSize];
+			int maxgcgen = GC.MaxGeneration;
+			for (int z = 0, savecooldown = 5; z < trainingBatches; ++z, --savecooldown)
 			{
-				
-				Console.WriteLine("Start training batch #" + batchid);
+				Console.WriteLine("Start training batch #" + z);
+				float totalloss = 0;
 				using (var d = NewDisposeScope())
 				{
 					adam.zero_grad();
-					float totalloss = 0;
-					for(int z = 0; z < trainingBatchSize; ++z){
-						ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2)];
-
-						int split = RandomNumberGenerator.GetInt32(example[0], example.Length - 1);
-						ushort backup = example[split];
-						example[split] = 2; //MASK token
-						Span<ushort> view = example.AsSpan(1, split + 1);
-						using var d2 = NewDisposeScope();
-
-						Tensor prob = notchatgpt.forward(view);
-						classexpect[backup] = 1;
-
-						Tensor loss = crossEntropyLoss.forward(prob, tensor(classexpect).to(CUDA));
-						classexpect[backup] = 0;
-						example[split] = backup;
-						loss.backward();
-						totalloss += (float)loss.cpu();
-					}
-					Console.WriteLine("Batch total loss: " + totalloss);
-					if(totalloss < bestloss & savecooldown < 0){
-						Console.WriteLine("Saving best policy...");
-						bestloss = totalloss;
-						string savename = save + batchid;
-						notchatgpt.save(savename);
-						savequeue.Enqueue(savename);
-						if(savequeue.Count > 5){
-							File.Delete(savequeue.Dequeue());
-						}
-						savecooldown = 8;
-
-
-					}
-
-					adam.step();
 				}
+				
+				Console.WriteLine("Forward pass batch #" + z);
+				using var d2 = NewDisposeScope();
+				for (int k = 0; k < trainingMicroBatchSize; ++k)
+				{
+					ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2)];
+
+					int split = RandomNumberGenerator.GetInt32(example[0], example.Length - 1);
+					ushort backup = example[split];
+					example[split] = 2; //MASK token
+					Span<ushort> view = example.AsSpan(1, split + 1);
+
+					expectedTensors[k] = backup;
+					actualTensors[k] = notchatgpt.forward(view).reshape(shape1);
+				}
+				Console.WriteLine("Compute loss batch #" + z);
+				Tensor loss = crossEntropyLoss.forward(cat(actualTensors, 0), tensor(expectedTensors).to(CUDA));
+				Console.WriteLine("Pre-cleanup trash");
+				for (int k = 0; k < trainingMicroBatchSize; ++k)
+				{
+					actualTensors[k].Dispose();
+#pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type.
+					actualTensors[k] = null;
+#pragma warning restore CS8625 // Cannot convert null literal to non-nullable reference type.
+				}
+				float totalloss2 = loss.cpu().ToSingle();
+				Console.WriteLine("Minibatch loss: " + totalloss2);
+
+				Console.WriteLine("Full garbage collection");
+				GC.Collect(maxgcgen, GCCollectionMode.Forced, true, false);
+				GC.WaitForPendingFinalizers();
+				Console.WriteLine("Total loss: " + totalloss);
+				if (totalloss < bestloss & savecooldown < 0)
+				{
+					Console.WriteLine("Saving best policy...");
+					bestloss = totalloss;
+					string savename = save + z;
+					notchatgpt.save(savename);
+					savequeue.Enqueue(savename);
+					if (savequeue.Count > 5)
+					{
+						File.Delete(savequeue.Dequeue());
+					}
+					savecooldown = 5;
+				}
+				Console.WriteLine("Backpropagate batch #" + z);
+				loss.backward();
+				adam.step();
 			}
 
 		}
