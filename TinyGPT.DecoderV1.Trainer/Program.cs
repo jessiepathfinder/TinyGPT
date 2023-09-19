@@ -177,6 +177,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 					expectedTensors[k] = backup;
 					actualTensors[k] = notchatgpt.forward(view).reshape(shape1);
+					example[split] = backup;
 				}
 				Console.WriteLine("Compute loss batch #" + z);
 				Tensor loss = crossEntropyLoss.forward(cat(actualTensors, 0), tensor(expectedTensors).to(CUDA));
