@@ -137,10 +137,10 @@ namespace TinyGPT.Core
 			int attentionCount = attentionHeads.Count;
 			Tensor[] tb = new Tensor[attentionCount];
 			int lm1 = len - 1;
-			Tensor lasttensor = tensor[lm1].reshape(shape2);
+			Tensor lasttensor = input[lm1].reshape(shape2);
 			for (int i = 0; i < attentionCount; ++i) {
 				(Tensor x, Tensor y, Tensor z) = attentionHeads[i].forward(tensor);
-				tb[i] = functional.scaled_dot_product_attention(x, y, z)[lm1].reshape(shape2).add(lasttensor).reshape(shape1);
+				tb[i] = functional.scaled_dot_product_attention(x, y, z)[lm1].reshape(shape2).add(attentionBypasses[i].forward(lasttensor)).reshape(shape1);
 			}
 			tensor = cat(tb, 0).reshape(shape2);
 			foreach (Module<Tensor, Tensor> module in predictorStages){
