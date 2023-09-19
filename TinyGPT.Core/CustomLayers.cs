@@ -44,6 +44,12 @@ namespace TinyGPT.Core
 			relu = PReLU(outputs);
 			RegisterComponents();
 		}
+		public DenseStepV2(long inputs, long outputs, bool hasbias, string name) : base(name)
+		{
+			network = Linear(inputs, outputs, hasbias);
+			relu = PReLU(outputs);
+			RegisterComponents();
+		}
 
 		public override Tensor forward(Tensor input)
 		{

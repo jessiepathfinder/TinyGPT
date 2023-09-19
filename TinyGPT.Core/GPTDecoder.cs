@@ -74,6 +74,7 @@ namespace TinyGPT.Core
 
 		//transformer
 		private readonly ModuleList<Tridentv2> attentionHeads = new ModuleList<Tridentv2>();
+		private readonly ModuleList<DenseStepV2> attentionBypasses = new ModuleList<DenseStepV2>();
 
 		//predictor
 		private readonly ModuleList<Module<Tensor, Tensor>> predictorStages = new ModuleList<Module<Tensor, Tensor>>();
@@ -94,6 +95,7 @@ namespace TinyGPT.Core
 
 			for (int i = 0; i < attentionHeads1; ++i){
 				attentionHeads.Add(new Tridentv2("", latentTokenSize, attentionLatentSize));
+				attentionBypasses.Add(new DenseStepV2(latentTokenSize, attentionLatentSize, ""));
 			}
 			int densewidth = attentionLatentSize * attentionHeads1;
 			int prevsize = densewidth;
@@ -103,7 +105,7 @@ namespace TinyGPT.Core
 				predictorStages.Add(new DenseStepV2(prevsize, predictorHiddenSize, ""));
 				prevsize = predictorHiddenSize;
 			}
-			predictorStages.Add(new DenseStepV2(prevsize, predictorFinalHiddenSize, ""));
+			predictorStages.Add(new DenseStepV2(prevsize, predictorFinalHiddenSize, false, ""));
 			predictorStages.Add(Linear(predictorFinalHiddenSize, tokenTypes));
 
 			positionBias = Parameter(randn(latentTokenSize));
@@ -134,9 +136,11 @@ namespace TinyGPT.Core
 			Tensor tensor = cat(ta, 0);
 			int attentionCount = attentionHeads.Count;
 			Tensor[] tb = new Tensor[attentionCount];
-			for (int i = 0, lm1 = len - 1; i < attentionCount; ++i) {
+			int lm1 = len - 1;
+			Tensor lasttensor = tensor[lm1].reshape(shape2);
+			for (int i = 0; i < attentionCount; ++i) {
 				(Tensor x, Tensor y, Tensor z) = attentionHeads[i].forward(tensor);
-				tb[i] = functional.scaled_dot_product_attention(x, y, z)[lm1];
+				tb[i] = functional.scaled_dot_product_attention(x, y, z)[lm1].reshape(shape2).add(lasttensor).reshape(shape1);
 			}
 			tensor = cat(tb, 0).reshape(shape2);
 			foreach (Module<Tensor, Tensor> module in predictorStages){

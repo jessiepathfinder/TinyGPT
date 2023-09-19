@@ -36,11 +36,11 @@ namespace TinyGPT.Chatbot
 
 			//3 magic token types
 			tokenclasses += 3;
-			string[] decode = new string[tokenclasses];
+			string[] decode = new string[tokenclasses + 3];
 			int maxtokensize = 0;
 			foreach(KeyValuePair<string, ushort> keyValuePair in dict){
 				string key = keyValuePair.Key;
-				decode[keyValuePair.Value] = key;
+				decode[keyValuePair.Value + 3] = key;
 				maxtokensize = Math.Max(maxtokensize, key.Length);
 			}
 			Console.WriteLine("Loading model...");
