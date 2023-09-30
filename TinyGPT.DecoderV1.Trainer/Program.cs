@@ -173,6 +173,7 @@ namespace TinyGPT.DecoderV1.Trainer
 					List<long> expectedTensorList = new List<long>();
 					for (int k = 0; k < trainingMicroBatchSize; ++k)
 					{
+						Console.WriteLine(k);
 						ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2)];
 
 						int split = example[0];
@@ -185,12 +186,13 @@ namespace TinyGPT.DecoderV1.Trainer
 							estimate.MoveToOuterDisposeScope();
 							actualTensors[k] = estimate;
 						}
+						Console.WriteLine(k);
 						++split;
 						int len = example.Length;
 						expectedTensorList.Capacity += (len - split);
 						while (split < len)
 						{
-							expectedTensorList.Add(example[split]);
+							expectedTensorList.Add(example[split++]);
 						}
 
 					}
