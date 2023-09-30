@@ -20,7 +20,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int latentTokenSize = 512;
 		private const int maxContextSize = 2048;
 		private const int trainingBatches = 10000;
-		private const int trainingMicroBatchSize = 256;
+		private const int trainingMicroBatchSize = 16;
 		private const int attentionHeads = 8;
 		private const int feedForwardHiddenSize = 2048;
 		private const int feedForwardDepth = 2;
@@ -160,53 +160,48 @@ namespace TinyGPT.DecoderV1.Trainer
 			Tensor[] actualTensors = new Tensor[trainingMicroBatchSize];
 			for (int z = 0, savecooldown = 15; z < trainingBatches; ++z, --savecooldown)
 			{
-				List<long> expectedTensorList = new List<long>();
+				
 				
 				Console.WriteLine("Forward pass batch #" + z);
 				using var d2 = NewDisposeScope();
 				adam.zero_grad();
 				sgd.zero_grad();
-				for (int k = 0; k < trainingMicroBatchSize; ++k)
-				{
-					ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2)];
-
-					int split = example[0];
-					ushort backup = example[split + 1];
-					Span<ushort> view = example.AsSpan(1, split);
-
-					using(NewDisposeScope()){
-						Tensor estimate = notchatgpt.Forward(simpleFullGPTDecoderUnit.EncodeOnly(example.AsSpan(1)), split);
-						estimate.MoveToOuterDisposeScope();
-						actualTensors[k] = estimate;
-					}
-					++split;
-					int len = example.Length;
-					expectedTensorList.Capacity += (len - split);
-					while(split < len){
-						expectedTensorList.Add(example[split]);
-					}
-					
-				}
-				Console.WriteLine("Compute loss batch #" + z);
 				Tensor loss;
+				
+				
 				using(NewDisposeScope()){
+					List<long> expectedTensorList = new List<long>();
+					for (int k = 0; k < trainingMicroBatchSize; ++k)
+					{
+						ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2)];
+
+						int split = example[0];
+						ushort backup = example[split + 1];
+						Span<ushort> view = example.AsSpan(1, split);
+
+						using (NewDisposeScope())
+						{
+							Tensor estimate = notchatgpt.Forward(simpleFullGPTDecoderUnit.EncodeOnly(example.AsSpan(1)), split);
+							estimate.MoveToOuterDisposeScope();
+							actualTensors[k] = estimate;
+						}
+						++split;
+						int len = example.Length;
+						expectedTensorList.Capacity += (len - split);
+						while (split < len)
+						{
+							expectedTensorList.Add(example[split]);
+						}
+
+					}
+					Console.WriteLine("Compute loss batch #" + z);
 					loss = crossEntropyLoss.forward(cat(actualTensors, 0), tensor(expectedTensorList).to(CUDA));
 					loss.MoveToOuterDisposeScope();
 				}
-				Console.WriteLine("Pre-cleanup trash");
-				for (int k = 0; k < trainingMicroBatchSize; ++k)
-				{
-					actualTensors[k].Dispose();
-#pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type.
-					actualTensors[k] = null;
-#pragma warning restore CS8625 // Cannot convert null literal to non-nullable reference type.
-				}
+
 				float totalloss2 = loss.cpu().ToSingle();
 				Console.WriteLine("Batch loss: " + totalloss2);
 
-				Console.WriteLine("Full garbage collection");
-				GC.Collect(maxgcgen, GCCollectionMode.Forced, true, false);
-				GC.WaitForPendingFinalizers();
 				if (totalloss2 < bestloss & savecooldown < 0)
 				{
 					Console.WriteLine("Saving best policy...");
