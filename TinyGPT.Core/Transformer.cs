@@ -53,9 +53,22 @@ namespace TinyGPT.Core
 
 
 	public static class Transformer{
+		public static Tensor SingleQueryDotProductAttention(Tensor query, Tensor keys, Tensor transposedValues)
+		{
+			using Tensor a = matmul(query, keys);
+			using Tensor b = a.div(Math.Sqrt(query.size(0)));
+			using Tensor c = b.softmax(-1);
+			return matmul(c, transposedValues);
+		}
+
 		public static Tensor PositionalEncodingV2(Tensor input, Tensor weights, Tensor biases, int index)
 		{
-			return input.add(weights.mul(index).add(biases).sin());
+			Tensor x;
+			using (DisposeScope disposeScope = NewDisposeScope()){
+				x = input.add(weights.mul(index).add(biases).sin());
+				x.MoveToOuterDisposeScope();
+			}
+			return x;
 		}
 		public static void EncodePositionV2(ReadOnlySpan<Tensor> span, Span<Tensor> outputs, Tensor weights, Tensor biases)
 		{
@@ -70,7 +83,7 @@ namespace TinyGPT.Core
 			}
 		}
 
-		public static int Tokenize(IReadOnlyDictionary<string, ushort> dict, Span<ushort> output, string str, int maxtokensize)
+		public static int Tokenize(IReadOnlyDictionary<string, ushort> dict, Span<ushort> output, string str, int maxtokensize, int specialTokenClasses)
 		{
 			if(maxtokensize < 1){
 				throw new ArgumentOutOfRangeException(nameof(maxtokensize));
@@ -91,7 +104,7 @@ namespace TinyGPT.Core
 				}
 				if (token > -1)
 				{
-					output[pos++] = (ushort)(token + 2);
+					output[pos++] = (ushort)(token + specialTokenClasses);
 				}
 			}
 			return pos;

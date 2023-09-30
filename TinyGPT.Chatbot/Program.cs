@@ -61,8 +61,8 @@ namespace TinyGPT.Chatbot
 							dictionaryItems.Add(new BERTDictionaryItem("", 256));
 						}
 
-						themodel = new FullGPTDecoderUnitV1("TinyGPT", dictionaryItems, new GPTDecoderV1(16, 2, 256, tokenclasses, 128, 1024, 1024, ""));
-						maxcontext = 1024;
+						themodel = new FullGPTDecoderUnitV1("TinyGPT", 256, 2, 8, 5, 2048, tokenclasses);
+						maxcontext = 2048;
 					}
 					break;
 				default:
@@ -89,19 +89,27 @@ namespace TinyGPT.Chatbot
 					continue;
 				}
 				buffer[intokens] = 0; //[STARTGPT]
-				for(int i = intokens + 2; i < maxcontext; ++i){
-					buffer[i] = 2; //[MASK]
+				for(int i = intokens + 1; i < maxcontext; ++i){
 					float best = -1;
 					int bestindex = 1;
-					Tensor tensor = themodel.forward(buffer.Slice(0, i + 1)).cpu();
-					for(int z = 0; z < tokenclasses; ++z){
-						float my = tensor[z].ToScalar().ToSingle();
-						if(my > best){
-							best = my;
-							bestindex = z;
+					Tensor tensor;
+					using (var ds = NewDisposeScope()){
+						tensor = themodel.Forward(buffer.Slice(0, i)).cpu();
+						tensor.MoveToOuterDisposeScope();
+					}
+					using(tensor){
+						for (int z = 0; z < tokenclasses; ++z)
+						{
+							float my = tensor[z].ToScalar().ToSingle();
+							if (my > best)
+							{
+								best = my;
+								bestindex = z;
+							}
 						}
 					}
-					if(bestindex == 1){
+
+					if (bestindex == 1){
 						break;
 					}
 					string? str = decode[bestindex];

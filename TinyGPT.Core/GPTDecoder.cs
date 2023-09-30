@@ -1,11 +1,15 @@
 ﻿using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.Numerics;
 using System.Reflection.Metadata;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
+using TorchSharp;
 using TorchSharp.Modules;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
@@ -23,130 +27,230 @@ namespace TinyGPT.Core
 		{
 		}
 
-		public abstract Tensor forward(ReadOnlySpan<ushort> input);
+		public abstract Tensor Forward(ReadOnlySpan<ushort> input);
+		public sealed override Tensor forward(ReadOnlyMemory<ushort> input)
+		{
+			return Forward(input.Span);
+		}
 	}
-	public sealed class FullGPTDecoderUnitV1 : FullGPTDecoderUnit
-	{
-		private static readonly ArrayPool<Tensor> arrayPool = ArrayPool<Tensor>.Create();
+	public sealed class SimpleFullGPTDecoderUnit : FullGPTDecoderUnit{
 		private readonly ModuleList<BERTDictionaryItem> dictionaryItems;
-		private readonly GPTDecoderV1 gptDecoder;
+		private readonly GPTDecoderUnit decoder;
+		private static readonly ArrayPool<Tensor> tensorpool = ArrayPool<Tensor>.Create();
 
-		public FullGPTDecoderUnitV1(string name, ModuleList<BERTDictionaryItem> dictionaryItems, GPTDecoderV1 gptDecoder) : base(name)
+		public SimpleFullGPTDecoderUnit(ModuleList<BERTDictionaryItem> dictionaryItems, GPTDecoderUnit decoder, string name) : base(name)
 		{
 			this.dictionaryItems = dictionaryItems ?? throw new ArgumentNullException(nameof(dictionaryItems));
-			this.gptDecoder = gptDecoder ?? throw new ArgumentNullException(nameof(gptDecoder));
+			this.decoder = decoder ?? throw new ArgumentNullException(nameof(decoder));
 			RegisterComponents();
 		}
 
-		public override Tensor forward(ReadOnlyMemory<ushort> input)
-		{
-			return forward(input.Span);
-		}
-		public override Tensor forward(ReadOnlySpan<ushort> input)
+		public override Tensor Forward(ReadOnlySpan<ushort> input)
 		{
 			int len = input.Length;
-			if(len == 0){
-				throw new IndexOutOfRangeException("Input length cannot be zero");
+			Tensor[] tensors = tensorpool.Rent(len);
+			try{
+				for(int i = 0; i < len; ++i){
+					tensors[i] = dictionaryItems[input[i]].parameters1;
+				}
+				return decoder.Forward(tensors.AsSpan(0, len));
+			} finally{
+				Misc.EraseReturnAsync(tensorpool, tensors, len);
 			}
-			ModuleList<BERTDictionaryItem> cache = dictionaryItems;
-			Tensor[] tensors = arrayPool.Rent(len);
+			
+		}
+		public Tensor[] EncodeOnly(ReadOnlySpan<ushort> input)
+		{
+			int len = input.Length;
+			Tensor[] tensors = new Tensor[len];
 			try
 			{
 				for (int i = 0; i < len; ++i)
 				{
-					tensors[i] = cache[input[i]].parameters1;
+					tensors[i] = dictionaryItems[input[i]].parameters1;
 				}
-				return gptDecoder.forward(tensors.AsSpan(0, len));
+				return tensors;
 			}
-			finally
+			catch
 			{
-				Misc.EraseReturnAsync(arrayPool, tensors, len);
+				for (int i = 0; i < len; ++i)
+				{
+					Tensor tensor = tensors[i];
+					if(tensor is null){
+						continue;
+					}
+					try{
+						tensor.Dispose();
+					} catch{
+						
+					}
+				}
+				throw;
 			}
+
 		}
 	}
-	public sealed class GPTDecoderV1 : Module<ReadOnlyMemory<Tensor>, Tensor>
+	public abstract class GPTDecoderUnit : Module<ReadOnlyMemory<Tensor>, Tensor>
 	{
-		
-		
-		//positional encoding
-		private readonly Parameter positionWeights;
-		private readonly Parameter positionBias;
-
-		//transformer
-		private readonly ModuleList<Tridentv2> attentionHeads = new ModuleList<Tridentv2>();
-		private readonly ModuleList<DenseStepV2> attentionBypasses = new ModuleList<DenseStepV2>();
-
-		//predictor
-		private readonly ModuleList<Module<Tensor, Tensor>> predictorStages = new ModuleList<Module<Tensor, Tensor>>();
-
-		public GPTDecoderV1(int attentionHeads1, int predictorDepth, int latentTokenSize, int tokenTypes, int attentionLatentSize, int predictorHiddenSize, int predictorFinalHiddenSize, string name) : base(name)
+		protected GPTDecoderUnit(string name) : base(name)
 		{
-			if (attentionHeads1 < 1) {
-				throw new ArgumentOutOfRangeException(nameof(attentionHeads));
-			}
-			if (latentTokenSize < 1)
-			{
-				throw new ArgumentOutOfRangeException(nameof(latentTokenSize));
-			}
-			if (tokenTypes < 1)
-			{
-				throw new ArgumentOutOfRangeException(nameof(tokenTypes));
-			}
+		}
 
-			for (int i = 0; i < attentionHeads1; ++i){
-				attentionHeads.Add(new Tridentv2("", latentTokenSize, attentionLatentSize));
-				attentionBypasses.Add(new DenseStepV2(latentTokenSize, attentionLatentSize, false, 1, ""));
-			}
-			int densewidth = attentionLatentSize * attentionHeads1;
-			int prevsize = densewidth;
+		protected GPTDecoderUnit(nint handle, nint boxedHandle) : base(handle, boxedHandle)
+		{
+		}
 
-			for (int i = 0; i < predictorDepth; ++i)
-			{
-				predictorStages.Add(new DenseStepV2(prevsize, predictorHiddenSize, ""));
-				prevsize = predictorHiddenSize;
-			}
-			predictorStages.Add(new DenseStepV2(prevsize, predictorFinalHiddenSize, ""));
-			predictorStages.Add(Linear(predictorFinalHiddenSize, tokenTypes, false));
-
-			positionBias = Parameter(randn(latentTokenSize));
-			positionWeights = Parameter(randn(latentTokenSize));
-
+		public abstract Tensor Forward(ReadOnlySpan<Tensor> input);
+		public sealed override Tensor forward(ReadOnlyMemory<Tensor> input)
+		{
+			return Forward(input.Span);
+		}
+	}
+	public sealed class SimpleAttentionHead : Module<ReadOnlyMemory<Tensor>, Tensor>
+	{
+		private readonly Linear keylayer;
+		private readonly Linear valuelayer;
+		private readonly Linear querylayer;
+		private readonly Parameter positionalEncodingWeight;
+		private readonly Parameter positionalEncodingBias;
+		public SimpleAttentionHead(string name, int size) : base(name)
+		{
+			keylayer = Linear(size, size, false);
+			valuelayer = Linear(size, size, false);
+			querylayer = Linear(size, size, false);
+			positionalEncodingWeight = Parameter(randn(size));
+			positionalEncodingBias = Parameter(randn(size));
 			RegisterComponents();
 		}
 
 		public override Tensor forward(ReadOnlyMemory<Tensor> input)
 		{
-			return forward(input.Span);
+			return Forward(input.Span);
 		}
-		private static readonly long[] shape1 = { -1 };
-		private static readonly long[] shape2 = { 1, -1 };
-		public Tensor forward(ReadOnlySpan<Tensor> input)
+		private static readonly long[] shape2 = new long[] { 1, -1 };
+		public Tensor Forward(ReadOnlySpan<Tensor> input)
 		{
 			int len = input.Length;
-			if(len == 0){
-				throw new IndexOutOfRangeException("input can't be empty");
-			}
-			Tensor[] ta = new Tensor[len];
-			
-			Transformer.EncodePositionV2(input, ta, positionWeights, positionBias);
-			for (int i = 0; i < len; ++i)
+			if (len == 0)
 			{
-				ta[i] = input[i].reshape(shape2);
+				throw new IndexOutOfRangeException(nameof(input));
 			}
-			Tensor tensor = cat(ta, 0);
-			int attentionCount = attentionHeads.Count;
-			Tensor[] tb = new Tensor[attentionCount];
-			int lm1 = len - 1;
-			Tensor lasttensor = input[lm1].reshape(shape2);
-			for (int i = 0; i < attentionCount; ++i) {
-				(Tensor x, Tensor y, Tensor z) = attentionHeads[i].forward(tensor);
-				tb[i] = functional.scaled_dot_product_attention(x, y, z)[lm1].reshape(shape2).add(attentionBypasses[i].forward(lasttensor));
+			using (NewDisposeScope())
+			{
+				Tensor y;
+				using (NewDisposeScope())
+				{
+					Tensor[] tensors = new Tensor[len];
+					for (int i = 0; i < len; ++i)
+					{
+						using (NewDisposeScope())
+						{
+							Tensor x = input[i].add(positionalEncodingWeight.mul(i).add(positionalEncodingBias).cos()).reshape(shape2);
+							x.MoveToOuterDisposeScope();
+							tensors[i] = x;
+						}
+					}
+					y = cat(tensors, 0);
+					y.MoveToOuterDisposeScope();
+				}
+				Tensor keys;
+				Tensor values;
+				Tensor queries;
+				using(y){
+					keys = keylayer.forward(y);
+					values = valuelayer.forward(y);
+					queries = querylayer.forward(y);
+				}
+				Tensor z = functional.scaled_dot_product_attention(queries, keys, values, is_casual: true);
+				z.MoveToOuterDisposeScope();
+				return z;
 			}
-			tensor = cat(tb, 1);
-			foreach (Module<Tensor, Tensor> module in predictorStages){
-				tensor = module.forward(tensor);
-			}
-			return softmax(tensor.reshape(shape1), 0);
 		}
+
+
 	}
+	public sealed class GPTDecoderUnitV1 : GPTDecoderUnit
+	{
+		
+		private readonly Linear finalLayer;
+		private readonly Linear prefinal;
+		private readonly ModuleList<SimpleAttentionHead> attentionHeads = new ModuleList<SimpleAttentionHead>();
+		private readonly ModuleList<JessieNetLayer> jessienet = new ModuleList<JessieNetLayer>();
+
+		private readonly int attentionHeadsCount;
+
+		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int attentionFeedforwardDepth, int attentionFeedforwardHiddenSize, int tokenClasses, int prefinalhiddensize) : base(name)
+		{
+			if (attentionHeadsCount < 1){
+				throw new ArgumentNullException(nameof(attentionHeadsCount));
+			}
+
+			int totalwidth = latentTokenSize * attentionHeadsCount;
+			for (int i = 0; i < attentionHeadsCount; ++i){
+				attentionHeads.Add(new SimpleAttentionHead("", latentTokenSize));
+			}
+			for (int i = 0; i < attentionFeedforwardDepth; ++i){
+				jessienet.Add(new JessieNetLayer("", totalwidth, attentionFeedforwardHiddenSize));
+			}
+			finalLayer = Linear(prefinalhiddensize, tokenClasses);
+			prefinal = Linear(totalwidth, prefinalhiddensize);
+			this.attentionHeadsCount = attentionHeadsCount;
+			RegisterComponents();
+		}
+		private static readonly long[] shape = new long[] { -1 };
+		private static readonly long[] shape2 = new long[] { 1, -1 };
+		public override Tensor Forward(ReadOnlySpan<Tensor> input)
+		{
+			using(Tensor x = Forward(input, input.Length - 1)){
+				return x.reshape(shape);
+			}
+		}
+		public Tensor Forward(ReadOnlySpan<Tensor> input, int slice)
+		{
+			int len = input.Length;
+			if (len == 0)
+			{
+				throw new IndexOutOfRangeException(nameof(input));
+			}
+
+			using (NewDisposeScope()) {
+				Tensor y;
+				using (NewDisposeScope())
+				{
+					Tensor[] attentions = new Tensor[attentionHeadsCount];
+					for (int i = 0; i < attentionHeadsCount; ++i)
+					{
+						using (Tensor x = attentionHeads[i].Forward(input))
+						{
+							attentions[i] = x.slice(0, slice, len, 1);
+						}
+					}
+					y = cat(attentions, 1);
+					y.MoveToOuterDisposeScope();
+				}
+				foreach(JessieNetLayer jessieNetLayer in jessienet){
+					using Tensor z = y;
+					y = jessieNetLayer.forward(z);
+				}
+				Tensor a;
+				using(y){
+					a = prefinal.forward(y);
+				}
+				using (a)
+				{
+					y = CustomActivations.LeakySoftplus(a);
+				}
+				using (y)
+				{
+					a = finalLayer.forward(y);
+				}
+				return a.softmax(1).MoveToOuterDisposeScope();
+			}
+
+			
+		}
+
+	}
+
+
 }

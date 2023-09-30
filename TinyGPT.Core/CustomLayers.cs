@@ -1,9 +1,11 @@
 ﻿using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
+using TorchSharp;
 using TorchSharp.Modules;
 using static TorchSharp.torch;
 
@@ -17,80 +19,42 @@ namespace TinyGPT.Core
 
 		public static Tensor LeakySoftplus(Tensor input)
 		{
-			return softplus(input, 1, 32).add(input / 16.0f);
+			using Tensor a = input / 16;
+			using Tensor b = softplus(input, 1, 20);
+			return a.add(b);
+		}
+		public static Tensor SignRoot(Tensor input) {
+			using DisposeScope disposeScope = NewDisposeScope();
+			Tensor sign = input.tanh();
+			Tensor res = sign.mul(input).add(1).sqrt().mul(sign);
+			res.MoveToOuterDisposeScope();
+			return res;
 		}
 	}
-	public sealed class DenseStep : Module<Tensor, Tensor>
-	{
-		private readonly Module<Tensor, Tensor> network;
-		public DenseStep(long inputs, long outputs, string name) : base(name)
-		{
-			network = Linear(inputs, outputs);
-			RegisterComponents();
-		}
 
-		public override Tensor forward(Tensor input)
-		{
-			return CustomActivations.LeakySoftplus(network.forward(input));
-		}
-	}
-	public sealed class DenseStepV2 : Module<Tensor, Tensor>
+
+	public sealed class JessieNetLayer : Module<Tensor, Tensor>
 	{
-		private readonly Module<Tensor, Tensor> network;
+		private readonly Linear a1;
+		private readonly Linear a2;
 		private readonly PReLU relu;
-		public DenseStepV2(long inputs, long outputs, string name) : base(name)
+		public JessieNetLayer(string name, int inputSize, int hiddenSize) : base(name)
 		{
-			network = Linear(inputs, outputs);
-			relu = PReLU(outputs);
-			RegisterComponents();
-		}
-		public DenseStepV2(long inputs, long outputs, bool hasbias, string name) : base(name)
-		{
-			network = Linear(inputs, outputs, hasbias);
-			relu = PReLU(outputs);
-			RegisterComponents();
-		}
-		public DenseStepV2(long inputs, long outputs, bool hasbias, float init, string name) : base(name)
-		{
-			network = Linear(inputs, outputs, hasbias);
-			relu = PReLU(outputs, init);
+			a1 = Linear(inputSize, hiddenSize);
+			a2 = Linear(hiddenSize, inputSize);
+			relu = PReLU(inputSize, 1);
 			RegisterComponents();
 		}
 
 		public override Tensor forward(Tensor input)
 		{
-			return relu.forward(network.forward(input));
+			using DisposeScope disposeScope = NewDisposeScope();
+			Tensor res = relu.forward(a2.forward(CustomActivations.SignRoot(a1.forward(input))).add(input));
+
+			res.MoveToOuterDisposeScope();
+			return res;
 		}
 	}
-	public class Tridentv2 : Module<Tensor, (Tensor, Tensor, Tensor)>
-	{
-		private readonly Linear linear1;
-		private readonly Linear linear2;
-		private readonly Linear linear3;
 
-		private readonly PReLU prelu1;
-		private readonly PReLU prelu2;
-		private readonly PReLU prelu3;
 
-		public Tridentv2(string name, int insize, int outsize) : base(name)
-		{
-			linear1 = Linear(insize, outsize, false);
-			linear2 = Linear(insize, outsize, false);
-			linear3 = Linear(insize, outsize, false);
-
-			prelu1 = PReLU(outsize, 1);
-			prelu2 = PReLU(outsize, 1);
-			prelu3 = PReLU(outsize, 1);
-			RegisterComponents();
-		}
-
-		public override (Tensor, Tensor, Tensor) forward(Tensor input1)
-		{
-			return (prelu1.forward(linear1.forward(input1)), prelu2.forward(linear2.forward(input1)), prelu3.forward(linear3.forward(input1)));
-		}
-		public Tensor ValueOnly(Tensor input)
-		{
-			return linear3.forward(input);
-		}
-	}
 }
