@@ -49,7 +49,7 @@ namespace TinyGPT.Core
 		public override Tensor forward(Tensor input)
 		{
 			using DisposeScope disposeScope = NewDisposeScope();
-			Tensor res = relu.forward(a2.forward(CustomActivations.SignRoot(a1.forward(input))).add(input));
+			Tensor res = relu.forward(a2.forward(CustomActivations.SignRoot(a1.forward(input)))).add(input);
 
 			res.MoveToOuterDisposeScope();
 			return res;

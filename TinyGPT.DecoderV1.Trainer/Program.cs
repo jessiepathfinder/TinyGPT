@@ -22,7 +22,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int trainingBatches = 10000;
 		private const int trainingMicroBatchSize = 16;
 		private const int attentionHeads = 8;
-		private const int feedForwardHiddenSize = 2048;
+		private const int feedForwardHiddenSize = 4096;
 		private const int feedForwardDepth = 2;
 		private const int prefinalhiddensize = 1024;
 
