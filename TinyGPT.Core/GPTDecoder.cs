@@ -153,15 +153,10 @@ namespace TinyGPT.Core
 					y = cat(tensors, 0);
 					y.MoveToOuterDisposeScope();
 				}
-				Tensor keys;
-				Tensor values;
-				Tensor queries;
-				using(y){
-					keys = keylayer.forward(y);
-					values = valuelayer.forward(y);
-					queries = querylayer.forward(y);
-				}
-				Tensor z = functional.scaled_dot_product_attention(queries, keys, values, is_casual: true);
+				Tensor keys = keylayer.forward(y);
+				Tensor values = valuelayer.forward(y);
+				Tensor queries = querylayer.forward(y);
+				Tensor z = functional.scaled_dot_product_attention(queries, keys, values, is_casual: true).add(y);
 				z.MoveToOuterDisposeScope();
 				return z;
 			}

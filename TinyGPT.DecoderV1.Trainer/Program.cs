@@ -51,7 +51,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			}
 
 			//2 magic token types
-			tokenclasses += 2;
+			tokenclasses += 3;
 			Console.WriteLine("Loading ELI5 + WikiQA question answering dataset...");
 			string[][]? questionanswering = JsonConvert.DeserializeObject<string[][]>(File.ReadAllText(datadir + "QuestionAnswering.json"));
 			if (questionanswering is null) {
