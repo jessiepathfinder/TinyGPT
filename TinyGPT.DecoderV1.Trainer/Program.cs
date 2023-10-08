@@ -1,6 +1,7 @@
 ﻿using Newtonsoft.Json;
 using System.Collections.Concurrent;
 using System.Net.Http.Headers;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Schema;
@@ -18,7 +19,7 @@ namespace TinyGPT.DecoderV1.Trainer
 	{
 		//hyperparameters
 		private const int latentTokenSize = 512;
-		private const int maxContextSize = 2048;
+		private const int maxContextSize = 256;
 		private const int trainingBatches = 100000;
 		private const int trainingMicroBatchSize = 16;
 		private const int attentionHeads = 8;
@@ -153,13 +154,48 @@ namespace TinyGPT.DecoderV1.Trainer
 			{
 				thr.Join();
 			}
+			Console.WriteLine("Start multithreaded forward workers...");
 
+			Barrier barrier1 = new Barrier(threads + 1);
+			Barrier barrier2 = new Barrier(threads + 1);
+			Tensor[] actualTensors = new Tensor[trainingMicroBatchSize];
+			ushort[][] expectedClasses = new ushort[trainingMicroBatchSize][]; 
+			for(int i = 0; i < threads; ++i){
+				int z = i;
+				Thread thread = new Thread(() => {
+					while(true){
+						barrier1.SignalAndWait();
+						for (int k = z; k < trainingMicroBatchSize; k += threads)
+						{
+							ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2)];
+
+							int split = example[0];
+							Span<ushort> view = example.AsSpan(1, split);
+
+							using (NewDisposeScope())
+							{
+								Tensor estimate = notchatgpt.Forward(simpleFullGPTDecoderUnit.EncodeOnly(example.AsSpan(1)), split);
+								estimate.MoveToOuterDisposeScope();
+								actualTensors[k] = estimate;
+							}
+							expectedClasses[k] = example;
+						}
+						barrier2.SignalAndWait();
+					}
+				});
+				thread.IsBackground = true;
+				thread.Name = "Forward thread #" + i;
+				thread.Start();
+			}
 			Console.WriteLine("Start training...");
+			
+
+
 			float bestloss = float.PositiveInfinity;
 			Queue<string> savequeue = new Queue<string>();
 			long[] shape1 = new long[] {1, -1};
 			int maxgcgen = GC.MaxGeneration;
-			Tensor[] actualTensors = new Tensor[trainingMicroBatchSize];
+			
 			for (int z = 0, savecooldown = 15; z < trainingBatches; ++z, --savecooldown)
 			{
 				
@@ -169,39 +205,39 @@ namespace TinyGPT.DecoderV1.Trainer
 				adam.zero_grad();
 				sgd.zero_grad();
 				Tensor loss;
-				
-				
-				using(NewDisposeScope()){
-					List<long> expectedTensorList = new List<long>(maxContextSize * trainingMicroBatchSize);
-					for (int k = 0; k < trainingMicroBatchSize; ++k)
-					{
-						ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2)];
+				barrier1.SignalAndWait();
+				barrier2.SignalAndWait();
 
-						int split = example[0];
-						ushort backup = example[split + 1];
-						Span<ushort> view = example.AsSpan(1, split);
+				int totallen = 0;
+				for(int p= 0; p < trainingMicroBatchSize; ++p){
+					ushort[] arr = expectedClasses[p];
+					totallen += arr.Length - (arr[0] + 1);
+				}
+				int[] ec2 = new int[totallen];
+				for (int p = 0, pos = 0; p < trainingMicroBatchSize; ++p)
+				{
+					ushort[] arr = expectedClasses[p];
+					int arrlen = arr.Length;
 
-						using (NewDisposeScope())
-						{
-							Tensor estimate = notchatgpt.Forward(simpleFullGPTDecoderUnit.EncodeOnly(example.AsSpan(1)), split);
-							estimate.MoveToOuterDisposeScope();
-							actualTensors[k] = estimate;
-						}
-						++split;
-						int len = example.Length;
-						expectedTensorList.Capacity += (len - split);
-						while (split < len)
-						{
-							expectedTensorList.Add(example[split++]);
-						}
-
+					for(int pos2 = arr[0] + 1; pos2 < arrlen; ++pos2, ++pos) {
+						ec2[pos] = arr[pos2];
 					}
-					Console.WriteLine("Compute loss batch #" + z);
-					loss = crossEntropyLoss.forward(cat(actualTensors, 0), tensor(expectedTensorList).to(CUDA));
-					loss.MoveToOuterDisposeScope();
+					
 				}
 
-				
+				using (NewDisposeScope()){
+					Console.WriteLine("Compute loss batch #" + z);
+
+					loss = crossEntropyLoss.forward(cat(actualTensors, 0), tensor(ec2).to(ScalarType.Int64, CUDA, true));
+
+					loss.MoveToOuterDisposeScope();
+				}
+				for (int p = 0; p < trainingMicroBatchSize; ++p)
+				{
+					actualTensors[p].Dispose();
+				}
+
+
 				Console.WriteLine("Backpropagate batch #" + z);
 				using(NewDisposeScope()){
 					loss.backward();
