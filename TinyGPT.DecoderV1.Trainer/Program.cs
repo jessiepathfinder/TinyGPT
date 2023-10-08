@@ -19,7 +19,7 @@ namespace TinyGPT.DecoderV1.Trainer
 	{
 		//hyperparameters
 		private const int latentTokenSize = 512;
-		private const int maxContextSize = 256;
+		private const int maxContextSize = 2048;
 		private const int trainingBatches = 100000;
 		private const int trainingMicroBatchSize = 16;
 		private const int attentionHeads = 8;
