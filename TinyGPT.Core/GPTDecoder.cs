@@ -113,13 +113,17 @@ namespace TinyGPT.Core
 		private readonly Linear querylayer;
 		private readonly Parameter positionalEncodingWeight;
 		private readonly Parameter positionalEncodingBias;
-		public SimpleAttentionHead(string name, int size) : base(name)
+		private readonly ModuleList<JessieNetLayer> jessieNetLayers = new ModuleList<JessieNetLayer>();
+		public SimpleAttentionHead(string name, int size, int processorDepth, int processorHiddenSize, double epsilon = 1e-8) : base(name)
 		{
 			keylayer = Linear(size, size, false);
 			valuelayer = Linear(size, size, false);
 			querylayer = Linear(size, size, false);
 			positionalEncodingWeight = Parameter(randn(size));
 			positionalEncodingBias = Parameter(randn(size));
+			for(int i = 0; i < processorDepth; ++i){
+				jessieNetLayers.Add(new JessieNetLayer("", size, processorHiddenSize, epsilon));
+			}
 			RegisterComponents();
 		}
 
@@ -157,6 +161,10 @@ namespace TinyGPT.Core
 				Tensor values = valuelayer.forward(y);
 				Tensor queries = querylayer.forward(y);
 				Tensor z = functional.scaled_dot_product_attention(queries, keys, values, is_casual: true).add(y);
+				foreach (JessieNetLayer jessieNetLayer in jessieNetLayers) {
+					using Tensor p = z;
+					z = jessieNetLayer.forward(p);
+				}
 				z.MoveToOuterDisposeScope();
 				return z;
 			}
@@ -168,13 +176,13 @@ namespace TinyGPT.Core
 	{
 		
 		private readonly Linear finalLayer;
-		private readonly Linear prefinal;
+		private readonly Linear viewCompressor;
 		private readonly ModuleList<SimpleAttentionHead> attentionHeads = new ModuleList<SimpleAttentionHead>();
 		private readonly ModuleList<JessieNetLayer> jessienet = new ModuleList<JessieNetLayer>();
 
 		private readonly int attentionHeadsCount;
 
-		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int attentionFeedforwardDepth, int attentionFeedforwardHiddenSize, int tokenClasses, int prefinalhiddensize) : base(name)
+		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int attentionFeedforwardDepth, int attentionFeedforwardHiddenSize, int tokenClasses, int compressedViewSize, int processorDepth, int processorHiddenSize, double epsilon = 1e-8) : base(name)
 		{
 			if (attentionHeadsCount < 1){
 				throw new ArgumentNullException(nameof(attentionHeadsCount));
@@ -182,13 +190,13 @@ namespace TinyGPT.Core
 
 			int totalwidth = latentTokenSize * attentionHeadsCount;
 			for (int i = 0; i < attentionHeadsCount; ++i){
-				attentionHeads.Add(new SimpleAttentionHead("", latentTokenSize));
+				attentionHeads.Add(new SimpleAttentionHead("", latentTokenSize, processorDepth, processorHiddenSize, epsilon));
 			}
 			for (int i = 0; i < attentionFeedforwardDepth; ++i){
-				jessienet.Add(new JessieNetLayer("", totalwidth, attentionFeedforwardHiddenSize));
+				jessienet.Add(new JessieNetLayer("", compressedViewSize, attentionFeedforwardHiddenSize));
 			}
-			finalLayer = Linear(prefinalhiddensize, tokenClasses);
-			prefinal = Linear(totalwidth, prefinalhiddensize);
+			finalLayer = Linear(compressedViewSize, tokenClasses);
+			viewCompressor = Linear(totalwidth, compressedViewSize);
 			this.attentionHeadsCount = attentionHeadsCount;
 			RegisterComponents();
 		}
@@ -223,23 +231,22 @@ namespace TinyGPT.Core
 					y = cat(attentions, 1);
 					y.MoveToOuterDisposeScope();
 				}
+				using (Tensor z = y)
+				{
+					y = viewCompressor.forward(z);
+				}
+				using (Tensor z = y){
+					y = CustomActivations.LeakySoftplus(z);
+				}
 				foreach(JessieNetLayer jessieNetLayer in jessienet){
 					using Tensor z = y;
 					y = jessieNetLayer.forward(z);
 				}
-				Tensor a;
-				using(y){
-					a = prefinal.forward(y);
-				}
-				using (a)
+				using (Tensor z = finalLayer.forward(y))
 				{
-					y = CustomActivations.LeakySoftplus(a);
+					return z.softmax(1).MoveToOuterDisposeScope();
 				}
-				using (y)
-				{
-					a = finalLayer.forward(y);
-				}
-				return a.softmax(1).MoveToOuterDisposeScope();
+				
 			}
 
 			

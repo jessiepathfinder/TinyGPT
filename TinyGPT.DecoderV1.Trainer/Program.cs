@@ -19,12 +19,14 @@ namespace TinyGPT.DecoderV1.Trainer
 		//hyperparameters
 		private const int latentTokenSize = 512;
 		private const int maxContextSize = 2048;
-		private const int trainingBatches = 10000;
+		private const int trainingBatches = 100000;
 		private const int trainingMicroBatchSize = 16;
 		private const int attentionHeads = 8;
-		private const int feedForwardHiddenSize = 4096;
-		private const int feedForwardDepth = 2;
-		private const int prefinalhiddensize = 1024;
+		private const int feedForwardHiddenSize = 2048;
+		private const int feedForwardDepth = 3;
+		private const int compressedViewSize = 1024;
+		private const int processorHiddenSize = 1024;
+		private const int processorDepth = 3;
 
 
 
@@ -132,14 +134,14 @@ namespace TinyGPT.DecoderV1.Trainer
 			{
 				dictionaryItems.Add(new BERTDictionaryItem("", latentTokenSize));
 			}
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, feedForwardDepth, feedForwardHiddenSize, tokenclasses, prefinalhiddensize);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, feedForwardDepth, feedForwardHiddenSize, tokenclasses, compressedViewSize, processorDepth, processorHiddenSize);
 			SimpleFullGPTDecoderUnit simpleFullGPTDecoderUnit = new SimpleFullGPTDecoderUnit(dictionaryItems, notchatgpt, "");
 
 			simpleFullGPTDecoderUnit.to(CUDA, ScalarType.Float32);
 
-			Adam adam = new Adam(notchatgpt.parameters(), lr: 0.0005, 0.95, amsgrad: true);
-			SGD sgd = SGD(dictionaryItems.parameters(), 0.001);
-			LRScheduler learningRateScheduler = ExponentialLR(adam, 0.999, 1, true);
+			Adam adam = new Adam(notchatgpt.parameters(), lr: 0.00005, 0.95, weight_decay: 0.01, amsgrad: true);
+			SGD sgd = SGD(dictionaryItems.parameters(), 0.0001);
+			//LRScheduler learningRateScheduler = ExponentialLR(adam, 0.999, 1, true);
 
 			adam.to(CUDA);
 			CrossEntropyLoss crossEntropyLoss = new CrossEntropyLoss(reduction: nn.Reduction.Mean);
@@ -170,7 +172,7 @@ namespace TinyGPT.DecoderV1.Trainer
 				
 				
 				using(NewDisposeScope()){
-					List<long> expectedTensorList = new List<long>();
+					List<long> expectedTensorList = new List<long>(maxContextSize * trainingMicroBatchSize);
 					for (int k = 0; k < trainingMicroBatchSize; ++k)
 					{
 						ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2)];
@@ -199,6 +201,12 @@ namespace TinyGPT.DecoderV1.Trainer
 					loss.MoveToOuterDisposeScope();
 				}
 
+				
+				Console.WriteLine("Backpropagate batch #" + z);
+				using(NewDisposeScope()){
+					loss.backward();
+				}
+
 				float totalloss2 = loss.cpu().ToSingle();
 				Console.WriteLine("Batch loss: " + totalloss2);
 
@@ -215,9 +223,9 @@ namespace TinyGPT.DecoderV1.Trainer
 					}
 					savecooldown = 15;
 				}
-				Console.WriteLine("Backpropagate batch #" + z);
-				loss.backward();
-				learningRateScheduler.step();
+				Console.WriteLine("Optimizer step");
+
+				//learningRateScheduler.step();
 				adam.step();
 				sgd.step();
 			}
