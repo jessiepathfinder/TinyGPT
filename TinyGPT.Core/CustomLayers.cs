@@ -36,25 +36,21 @@ namespace TinyGPT.Core
 	{
 		private readonly Linear a1;
 		private readonly Linear a2;
-		private readonly PReLU relu;
-		private readonly Parameter normbias;
-		private readonly double epsilon;
+		private readonly Linear a3;
 
-		public JessieNetLayer(string name, int inputSize, int hiddenSize, double epsilon = 1e-8) : base(name)
+		public JessieNetLayer(string name, int inputSize, int hiddenSize) : base(name)
 		{
 			a1 = Linear(inputSize, hiddenSize);
 			a2 = Linear(hiddenSize, inputSize);
-			relu = PReLU(inputSize, 1);
-			normbias = new Parameter(zeros(inputSize));
-			this.epsilon = epsilon;
+			a3 = Linear(inputSize, inputSize);
+
 			RegisterComponents();
 		}
 
 		public override Tensor forward(Tensor input)
 		{
 			using DisposeScope disposeScope = NewDisposeScope();
-			Tensor res = relu.forward(a2.forward(CustomActivations.SwishDerivative(a1.forward(input)))).add(input);
-			res = res.div(res.add(normbias).square().mean().sqrt().add(epsilon));
+			Tensor res = CustomActivations.LeakySoftplus(a2.forward(CustomActivations.SwishDerivative(a1.forward(input))).add(input)).sub(a3.forward(input).silu());
 			
 
 			res.MoveToOuterDisposeScope();

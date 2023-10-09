@@ -114,7 +114,7 @@ namespace TinyGPT.Core
 		private readonly Parameter positionalEncodingWeight;
 		private readonly Parameter positionalEncodingBias;
 		private readonly ModuleList<JessieNetLayer> jessieNetLayers = new ModuleList<JessieNetLayer>();
-		public SimpleAttentionHead(string name, int size, int processorDepth, int processorHiddenSize, double epsilon = 1e-8) : base(name)
+		public SimpleAttentionHead(string name, int size, int processorDepth, int processorHiddenSize) : base(name)
 		{
 			keylayer = Linear(size, size, false);
 			valuelayer = Linear(size, size, false);
@@ -122,7 +122,7 @@ namespace TinyGPT.Core
 			positionalEncodingWeight = Parameter(randn(size));
 			positionalEncodingBias = Parameter(randn(size));
 			for(int i = 0; i < processorDepth; ++i){
-				jessieNetLayers.Add(new JessieNetLayer("", size, processorHiddenSize, epsilon));
+				jessieNetLayers.Add(new JessieNetLayer("", size, processorHiddenSize));
 			}
 			RegisterComponents();
 		}
@@ -157,10 +157,16 @@ namespace TinyGPT.Core
 					y = cat(tensors, 0);
 					y.MoveToOuterDisposeScope();
 				}
-				Tensor keys = keylayer.forward(y);
-				Tensor values = valuelayer.forward(y);
-				Tensor queries = querylayer.forward(y);
-				Tensor z = functional.scaled_dot_product_attention(queries, keys, values, is_casual: true).add(y);
+				Tensor z;
+				using (NewDisposeScope())
+				{
+					Tensor keys = keylayer.forward(y);
+					Tensor values = valuelayer.forward(y);
+					Tensor queries = querylayer.forward(y);
+					z = functional.scaled_dot_product_attention(queries, keys, values, is_casual: true).add(y).MoveToOuterDisposeScope();
+				}
+				
+				
 				foreach (JessieNetLayer jessieNetLayer in jessieNetLayers) {
 					using Tensor p = z;
 					z = jessieNetLayer.forward(p);
@@ -178,11 +184,11 @@ namespace TinyGPT.Core
 		private readonly Linear finalLayer;
 		private readonly Linear viewCompressor;
 		private readonly ModuleList<SimpleAttentionHead> attentionHeads = new ModuleList<SimpleAttentionHead>();
-		private readonly ModuleList<JessieNetLayer> jessienet = new ModuleList<JessieNetLayer>();
+		private readonly ModuleList<JessieNetLayer> jessienet = new();
 
 		private readonly int attentionHeadsCount;
 
-		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int attentionFeedforwardDepth, int attentionFeedforwardHiddenSize, int tokenClasses, int compressedViewSize, int processorDepth, int processorHiddenSize, double epsilon = 1e-8) : base(name)
+		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int attentionFeedforwardDepth, int attentionFeedforwardHiddenSize, int tokenClasses, int compressedViewSize, int processorDepth, int processorHiddenSize) : base(name)
 		{
 			if (attentionHeadsCount < 1){
 				throw new ArgumentNullException(nameof(attentionHeadsCount));
@@ -190,7 +196,7 @@ namespace TinyGPT.Core
 
 			int totalwidth = latentTokenSize * attentionHeadsCount;
 			for (int i = 0; i < attentionHeadsCount; ++i){
-				attentionHeads.Add(new SimpleAttentionHead("", latentTokenSize, processorDepth, processorHiddenSize, epsilon));
+				attentionHeads.Add(new SimpleAttentionHead("", latentTokenSize, processorDepth, processorHiddenSize));
 			}
 			for (int i = 0; i < attentionFeedforwardDepth; ++i){
 				jessienet.Add(new JessieNetLayer("", compressedViewSize, attentionFeedforwardHiddenSize));
@@ -204,9 +210,8 @@ namespace TinyGPT.Core
 		private static readonly long[] shape2 = new long[] { 1, -1 };
 		public override Tensor Forward(ReadOnlySpan<Tensor> input)
 		{
-			using(Tensor x = Forward(input, input.Length - 1)){
-				return x.reshape(shape);
-			}
+			using Tensor x = Forward(input, input.Length - 1);
+			return x.reshape(shape);
 		}
 		public Tensor Forward(ReadOnlySpan<Tensor> input, int slice)
 		{
@@ -238,13 +243,13 @@ namespace TinyGPT.Core
 				using (Tensor z = y){
 					y = CustomActivations.LeakySoftplus(z);
 				}
-				foreach(JessieNetLayer jessieNetLayer in jessienet){
+				foreach (JessieNetLayer jessieNetLayer in jessienet){
 					using Tensor z = y;
 					y = jessieNetLayer.forward(z);
 				}
 				using (Tensor z = finalLayer.forward(y))
 				{
-					return z.softmax(1).MoveToOuterDisposeScope();
+					return z.softmax(0).MoveToOuterDisposeScope();
 				}
 				
 			}

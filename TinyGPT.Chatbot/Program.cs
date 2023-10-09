@@ -34,9 +34,9 @@ namespace TinyGPT.Chatbot
 				tokenclasses = Math.Max(keyValuePair.Value, tokenclasses);
 			}
 
-			//3 magic token types
-			tokenclasses += 3;
-			string[] decode = new string[tokenclasses + 3];
+			//2 magic token types
+			tokenclasses += 2;
+			string[] decode = new string[tokenclasses + 2];
 			int maxtokensize = 0;
 			foreach(KeyValuePair<string, ushort> keyValuePair in dict){
 				string key = keyValuePair.Key;
@@ -55,14 +55,25 @@ namespace TinyGPT.Chatbot
 			switch(model){
 				case "nano-v1":
 					{
+						const int latentTokenSize = 512;
+						maxcontext = 2048;
+						const int trainingBatches = 100000;
+						const int trainingMicroBatchSize = 16;
+						const int attentionHeads = 8;
+						const int feedForwardHiddenSize = 2048;
+						const int feedForwardDepth = 3;
+						const int compressedViewSize = 1024;
+						const int processorHiddenSize = 1024;
+						const int processorDepth = 3;
+
 						ModuleList<BERTDictionaryItem> dictionaryItems = new ModuleList<BERTDictionaryItem>();
 						for (int i = 0; i < tokenclasses; ++i)
 						{
-							dictionaryItems.Add(new BERTDictionaryItem("", 256));
+							dictionaryItems.Add(new BERTDictionaryItem("", latentTokenSize));
 						}
+						GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, feedForwardDepth, feedForwardHiddenSize, tokenclasses, compressedViewSize, processorDepth, processorHiddenSize);
+						themodel = new SimpleFullGPTDecoderUnit(dictionaryItems, notchatgpt, "");
 
-						themodel = new FullGPTDecoderUnitV1("TinyGPT", 256, 2, 8, 5, 2048, tokenclasses);
-						maxcontext = 2048;
 					}
 					break;
 				default:
@@ -81,9 +92,12 @@ namespace TinyGPT.Chatbot
 			Console.WriteLine("Ready!");
 			while(true){
 				Console.Write("User: ");
-				string input = Console.ReadLine();
+				string? input = Console.ReadLine();
+				if(input is null){
+					continue;
+				}
 				Console.Write("TinyGPT: ");
-				int intokens = Transformer.Tokenize(dict, buffer, input, maxtokensize);
+				int intokens = Transformer.Tokenize(dict, buffer, input, maxtokensize, 2);
 				if(intokens > maxinsize){
 					Console.WriteLine("too big!");
 					continue;

@@ -140,9 +140,10 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			simpleFullGPTDecoderUnit.to(CUDA, ScalarType.Float32);
 
-			Adam adam = new Adam(notchatgpt.parameters(), lr: 0.00005, 0.95, weight_decay: 0.01, amsgrad: true);
-			SGD sgd = SGD(dictionaryItems.parameters(), 0.0001);
-			//LRScheduler learningRateScheduler = ExponentialLR(adam, 0.999, 1, true);
+			Adam adam = new Adam(notchatgpt.parameters(), lr: 1e-5, 0.95, weight_decay: 1e-7, amsgrad: true, eps:1e-10);
+			SGD sgd = SGD(dictionaryItems.parameters(), 1e-5);
+			LRScheduler learningRateScheduler = ExponentialLR(adam, 0.998, 0, true);
+			LRScheduler learningRateScheduler2 = ExponentialLR(sgd, 0.998, 0, false);
 
 			adam.to(CUDA);
 			CrossEntropyLoss crossEntropyLoss = new CrossEntropyLoss(reduction: nn.Reduction.Mean);
@@ -174,7 +175,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 							using (NewDisposeScope())
 							{
-								Tensor estimate = notchatgpt.Forward(simpleFullGPTDecoderUnit.EncodeOnly(example.AsSpan(1)), split);
+								Tensor estimate = notchatgpt.Forward(simpleFullGPTDecoderUnit.EncodeOnly(example.AsSpan(1, example.Length - 2)), split - 1);
 								estimate.MoveToOuterDisposeScope();
 								actualTensors[k] = estimate;
 							}
@@ -224,9 +225,9 @@ namespace TinyGPT.DecoderV1.Trainer
 					}
 					
 				}
-
+				Console.WriteLine("Compute loss batch #" + z);
 				using (NewDisposeScope()){
-					Console.WriteLine("Compute loss batch #" + z);
+					
 
 					loss = crossEntropyLoss.forward(cat(actualTensors, 0), tensor(ec2).to(ScalarType.Int64, CUDA, true));
 
@@ -251,7 +252,7 @@ namespace TinyGPT.DecoderV1.Trainer
 					Console.WriteLine("Saving best policy...");
 					bestloss = totalloss2;
 					string savename = save + z;
-					notchatgpt.save(savename);
+					simpleFullGPTDecoderUnit.save(savename);
 					savequeue.Enqueue(savename);
 					if (savequeue.Count > 5)
 					{
@@ -261,7 +262,8 @@ namespace TinyGPT.DecoderV1.Trainer
 				}
 				Console.WriteLine("Optimizer step");
 
-				//learningRateScheduler.step();
+				learningRateScheduler.step();
+				learningRateScheduler2.step();
 				adam.step();
 				sgd.step();
 			}
