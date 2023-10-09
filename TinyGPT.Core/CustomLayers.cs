@@ -29,6 +29,11 @@ namespace TinyGPT.Core
 			
 			return sigmoid.neg().add(1).mul(input).add(1).mul(sigmoid).MoveToOuterDisposeScope();
 		}
+		public static Tensor Norm(Tensor input, double epsilon){
+			using DisposeScope disposeScope = NewDisposeScope();
+			return input.div(input.square().mean().sqrt().add(epsilon)).MoveToOuterDisposeScope();
+
+		}
 	}
 
 
@@ -36,13 +41,12 @@ namespace TinyGPT.Core
 	{
 		private readonly Linear a1;
 		private readonly Linear a2;
-		private readonly Linear a3;
+		private readonly double epsilon;
 
-		public JessieNetLayer(string name, int inputSize, int hiddenSize) : base(name)
+		public JessieNetLayer(string name, int inputSize, int hiddenSize, double epsilon) : base(name)
 		{
 			a1 = Linear(inputSize, hiddenSize);
 			a2 = Linear(hiddenSize, inputSize);
-			a3 = Linear(inputSize, inputSize);
 
 			RegisterComponents();
 		}
@@ -50,7 +54,7 @@ namespace TinyGPT.Core
 		public override Tensor forward(Tensor input)
 		{
 			using DisposeScope disposeScope = NewDisposeScope();
-			Tensor res = CustomActivations.LeakySoftplus(a2.forward(CustomActivations.SwishDerivative(a1.forward(input))).add(input)).sub(a3.forward(input).silu());
+			Tensor res = CustomActivations.Norm(CustomActivations.LeakySoftplus(a2.forward(CustomActivations.SwishDerivative(a1.forward(input)))).add(input), epsilon);
 			
 
 			res.MoveToOuterDisposeScope();

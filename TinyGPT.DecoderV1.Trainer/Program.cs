@@ -135,7 +135,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			{
 				dictionaryItems.Add(new BERTDictionaryItem("", latentTokenSize));
 			}
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, feedForwardDepth, feedForwardHiddenSize, tokenclasses, compressedViewSize, processorDepth, processorHiddenSize);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, feedForwardDepth, feedForwardHiddenSize, tokenclasses, compressedViewSize, processorDepth, processorHiddenSize, 1e-10);
 			SimpleFullGPTDecoderUnit simpleFullGPTDecoderUnit = new SimpleFullGPTDecoderUnit(dictionaryItems, notchatgpt, "");
 
 			simpleFullGPTDecoderUnit.to(CUDA, ScalarType.Float32);
