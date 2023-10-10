@@ -306,9 +306,9 @@ namespace TinyGPT.Core
 					using Tensor z = y;
 					y = jessieNetLayer.forward(z);
 				}
-				using (Tensor z = finalLayer.forward(y))
+				using (y)
 				{
-					return z.softmax(1).MoveToOuterDisposeScope();
+					return finalLayer.forward(y).MoveToOuterDisposeScope();
 				}
 
 			}

@@ -22,12 +22,12 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int maxContextSize = 2048;
 		private const int trainingBatches = 100000;
 		private const int trainingMicroBatchSize = 16;
-		private const int attentionHeads = 8;
+		private const int attentionHeads = 12;
 		private const int feedForwardHiddenSize = 2048;
 		private const int feedForwardDepth = 3;
-		private const int compressedViewSize = 1024;
+		private const int compressedViewSize = 2048;
 		private const int processorHiddenSize = 1024;
-		private const int processorDepth = 3;
+		private const int processorDepth = 4;
 		private const int attentionConvLookback = 3;
 
 
@@ -144,7 +144,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, feedForwardDepth, feedForwardHiddenSize, tokenclasses, compressedViewSize, processorDepth, processorHiddenSize, 1e-10, attentionConvLookback);
 			SimpleFullGPTDecoderUnit simpleFullGPTDecoderUnit = new SimpleFullGPTDecoderUnit(dictionaryItems, notchatgpt, "");
 
-			simpleFullGPTDecoderUnit.to(CUDA, ScalarType.Float32);
+			simpleFullGPTDecoderUnit.to(CUDA, ScalarType.BFloat16);
 
 			Adam adam = new Adam(notchatgpt.parameters(), lr: 1e-4, 0.95, weight_decay: 1e-6, amsgrad: true, eps: 1e-9);
 			SGD sgd = SGD(dictionaryItems.parameters(), 1e-4);
@@ -152,8 +152,8 @@ namespace TinyGPT.DecoderV1.Trainer
 			LRScheduler learningRateScheduler2 = ExponentialLR(sgd, 0.999, 0, false);
 
 			adam.to(CUDA);
-			CrossEntropyLoss crossEntropyLoss = new CrossEntropyLoss(reduction: nn.Reduction.Mean);
-			crossEntropyLoss.to(CUDA, ScalarType.Float32);
+			NLLLoss crossEntropyLoss = new NLLLoss(reduction: nn.Reduction.Mean);
+			crossEntropyLoss.to(CUDA, ScalarType.BFloat16);
 			notchatgpt.train(true);
 
 			Console.WriteLine("Waiting for question answering dataset tokenization to complete...");
@@ -238,7 +238,12 @@ namespace TinyGPT.DecoderV1.Trainer
 				Console.WriteLine("Compute loss batch #" + z);
 				using (NewDisposeScope())
 				{
-					loss = crossEntropyLoss.forward(cat(actualTensors, 0), tensor(ec2).to(ScalarType.Int64, CUDA, true));
+					Tensor lsp;
+					using (Tensor cat2 = cat(actualTensors, 0))
+					{
+						lsp = cat2.log_softmax(-1);
+					}
+					loss = crossEntropyLoss.forward(lsp, tensor(ec2).to(ScalarType.Int64, CUDA, true));
 
 					loss.MoveToOuterDisposeScope();
 				}

@@ -112,7 +112,7 @@ namespace TinyGPT.Chatbot
 					Tensor tensor;
 					float[] probs;
 					using (var ds = NewDisposeScope()){
-						tensor = themodel.Forward(buffer.Slice(0, i)).cpu();
+						tensor = themodel.Forward(buffer.Slice(0, i)).softmax(-1).cpu();
 						tensor.MoveToOuterDisposeScope();
 					}
 					using(tensor){
