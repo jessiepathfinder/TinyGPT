@@ -132,8 +132,8 @@ namespace TinyGPT.Core
 			lookback = convlookback++;
 
 			keylayer = Conv1d(size, size, convlookback, bias: false, padding: lookback);
-			valuelayer = Conv1d(size, size, convlookback, bias: false, padding: convlookback);
 			querylayer = Conv1d(size, size, convlookback, bias: false, padding: lookback);
+			valuelayer = Conv1d(size, size, convlookback, bias: false, padding: convlookback);
 			positionalEncodingWeight = Parameter(randn(size));
 			positionalEncodingBias = Parameter(randn(size));
 
@@ -203,9 +203,10 @@ namespace TinyGPT.Core
 					using Tensor y2 = Transpose2(y);
 					using Tensor keys = Transpose2(Truncate2(lookback, finish, keylayer.forward(y2)));
 
-					using Tensor queries = Transpose2(Truncate2(lookback, finish, querylayer.forward(Transpose2(y2))));
+					using Tensor queries = Transpose2(Truncate2(lookback, finish, querylayer.forward(y2)));
 
-					using Tensor values = Transpose2(Truncate2(0, len, valuelayer.forward(Transpose2(y2))));
+					using Tensor tr2 = ry.transpose(0, 1);
+					using Tensor values = Transpose2(Truncate2(0, len, valuelayer.forward(tr2)));
 					using Tensor resvals = values.add(ry);
 					z = functional.scaled_dot_product_attention(queries, keys, resvals, is_casual: true);
 				}

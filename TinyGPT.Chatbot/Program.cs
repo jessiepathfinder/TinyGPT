@@ -73,7 +73,7 @@ namespace TinyGPT.Chatbot
 						{
 							dictionaryItems.Add(new BERTDictionaryItem("", latentTokenSize));
 						}
-						GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, feedForwardDepth, feedForwardHiddenSize, tokenclasses, compressedViewSize, processorDepth, processorHiddenSize, 1e-10, 3);
+						GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, feedForwardDepth, feedForwardHiddenSize, tokenclasses, compressedViewSize, processorDepth, processorHiddenSize, 1e-9, 3);
 						themodel = new SimpleFullGPTDecoderUnit(dictionaryItems, notchatgpt, "");
 
 					}
