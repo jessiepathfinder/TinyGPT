@@ -241,7 +241,7 @@ namespace TinyGPT.DecoderV1.Trainer
 					Tensor lsp;
 					using (Tensor cat2 = cat(actualTensors, 0))
 					{
-						lsp = cat2.log_softmax(-1);
+						lsp = cat2.log_softmax(0);
 					}
 					loss = crossEntropyLoss.forward(lsp, tensor(ec2).to(ScalarType.Int64, CUDA, true));
 

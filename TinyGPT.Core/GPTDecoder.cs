@@ -150,6 +150,7 @@ namespace TinyGPT.Core
 			return Forward(input.Span, 0);
 		}
 		private static readonly long[] shape2 = new long[] { 1, -1 };
+		private static readonly long[] shape3 = new long[] { -1, 1 };
 		private static Tensor Truncate2(int start, int end, Tensor t)
 		{
 			using (t)
@@ -180,37 +181,40 @@ namespace TinyGPT.Core
 					Tensor[] tensors = new Tensor[len];
 					for (int i = 0; i < len; ++i)
 					{
-						tensors[i] = input[i].reshape(shape2);
+						tensors[i] = input[i].reshape(shape3);
 					}
-					ry = cat(tensors, 0).MoveToOuterDisposeScope();
+					ry = cat(tensors, 1).MoveToOuterDisposeScope();
 					for (int i = 0; i < len; ++i)
 					{
 						tensors[i].Dispose();
 						using (NewDisposeScope())
 						{
-							Tensor x = input[i].add(positionalEncodingWeight.mul(i).add(positionalEncodingBias).cos()).reshape(shape2);
+							Tensor x = input[i].add(positionalEncodingWeight.mul(i).add(positionalEncodingBias).cos()).reshape(shape3);
 							x.MoveToOuterDisposeScope();
 							tensors[i] = x;
 						}
 					}
-					y = cat(tensors, 0);
+					y = cat(tensors, 1);
 					y.MoveToOuterDisposeScope();
 				}
 				Tensor z;
 				int lookback = this.lookback;
 				int finish = lookback + len;
 				{
-					using Tensor y2 = Transpose2(y);
-					using Tensor keys = Transpose2(Truncate2(lookback, finish, keylayer.forward(y2)));
+					using Tensor keys = Transpose2(Truncate2(lookback, finish, keylayer.forward(y)));
 
-					using Tensor queries = Transpose2(Truncate2(lookback, finish, querylayer.forward(y2)));
+					using Tensor queries = Transpose2(Truncate2(lookback, finish, querylayer.forward(y)));
 
-					using Tensor tr2 = ry.transpose(0, 1);
-					using Tensor values = Transpose2(Truncate2(0, len, valuelayer.forward(tr2)));
-					using Tensor resvals = values.add(ry);
-					z = functional.scaled_dot_product_attention(queries, keys, resvals, is_casual: true);
+					Tensor values = Truncate2(0, len, valuelayer.forward(ry));
+					using (Tensor values2 = values)
+					{
+						values = Transpose2(values2.add(ry));
+					}
+					using (values)
+					{
+						z = functional.scaled_dot_product_attention(queries, keys, values, is_casual: true);
+					}
 				}
-				ry.Dispose();
 				if (slice > 0)
 				{
 					using Tensor p = z;
