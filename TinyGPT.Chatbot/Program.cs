@@ -80,11 +80,12 @@ namespace TinyGPT.Chatbot
 					Console.WriteLine("unknown model!");
 					return;
 			}
+			themodel.to(ScalarType.BFloat16);
 			themodel.load(datadir + model + ".model");
 			themodel.eval();
 			if (usecuda)
 			{
-				themodel.to(CUDA, ScalarType.BFloat16);
+				themodel.to(CUDA);
 			}
 
 			Span<ushort> buffer = stackalloc ushort[maxcontext];
