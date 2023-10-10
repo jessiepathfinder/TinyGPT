@@ -28,6 +28,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int compressedViewSize = 1024;
 		private const int processorHiddenSize = 1024;
 		private const int processorDepth = 3;
+		private const int attentionConvLookback = 3;
 
 
 
@@ -135,7 +136,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			{
 				dictionaryItems.Add(new BERTDictionaryItem("", latentTokenSize));
 			}
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, feedForwardDepth, feedForwardHiddenSize, tokenclasses, compressedViewSize, processorDepth, processorHiddenSize, 1e-10);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, feedForwardDepth, feedForwardHiddenSize, tokenclasses, compressedViewSize, processorDepth, processorHiddenSize, 1e-10, attentionConvLookback);
 			SimpleFullGPTDecoderUnit simpleFullGPTDecoderUnit = new SimpleFullGPTDecoderUnit(dictionaryItems, notchatgpt, "");
 
 			simpleFullGPTDecoderUnit.to(CUDA, ScalarType.Float32);
@@ -227,8 +228,6 @@ namespace TinyGPT.DecoderV1.Trainer
 				}
 				Console.WriteLine("Compute loss batch #" + z);
 				using (NewDisposeScope()){
-					
-
 					loss = crossEntropyLoss.forward(cat(actualTensors, 0), tensor(ec2).to(ScalarType.Int64, CUDA, true));
 
 					loss.MoveToOuterDisposeScope();

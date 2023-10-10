@@ -1,5 +1,6 @@
 ﻿using Newtonsoft.Json;
 using System.Runtime.Serialization.Formatters;
+using System.Transactions;
 using TinyGPT.Core;
 using TorchSharp;
 using TorchSharp.Modules;
@@ -31,16 +32,17 @@ namespace TinyGPT.Chatbot
 			foreach (KeyValuePair<string, ushort> keyValuePair in dict)
 			{
 				maxlen = Math.Max(maxlen, keyValuePair.Key.Length);
-				tokenclasses = Math.Max(keyValuePair.Value, tokenclasses);
+				int val = keyValuePair.Value;
+				tokenclasses = Math.Max(val, tokenclasses);
 			}
 
 			//2 magic token types
-			tokenclasses += 2;
-			string[] decode = new string[tokenclasses + 2];
+			tokenclasses += 3;
+			string[] decode = new string[tokenclasses + 1];
 			int maxtokensize = 0;
 			foreach(KeyValuePair<string, ushort> keyValuePair in dict){
 				string key = keyValuePair.Key;
-				decode[keyValuePair.Value + 3] = key;
+				decode[keyValuePair.Value + 2] = key;
 				maxtokensize = Math.Max(maxtokensize, key.Length);
 			}
 			Console.WriteLine("Loading model...");
@@ -103,10 +105,12 @@ namespace TinyGPT.Chatbot
 					continue;
 				}
 				buffer[intokens] = 0; //[STARTGPT]
+				bool first = true;
 				for(int i = intokens + 1; i < maxcontext; ++i){
-					float best = -1;
+					double best = -1;
 					int bestindex = 1;
 					Tensor tensor;
+					float[] probs;
 					using (var ds = NewDisposeScope()){
 						tensor = themodel.Forward(buffer.Slice(0, i)).cpu();
 						tensor.MoveToOuterDisposeScope();
@@ -114,9 +118,10 @@ namespace TinyGPT.Chatbot
 					using(tensor){
 						for (int z = 0; z < tokenclasses; ++z)
 						{
-							float my = tensor[z].ToScalar().ToSingle();
+							double my = tensor[z].ToScalar().ToDouble();
 							if (my > best)
 							{
+								
 								best = my;
 								bestindex = z;
 							}
@@ -124,12 +129,16 @@ namespace TinyGPT.Chatbot
 					}
 
 					if (bestindex == 1){
+						if(first){
+							continue;
+						}
 						break;
 					}
+					first = false;
 					string? str = decode[bestindex];
 					buffer[i] = (ushort)bestindex;
 					if (str is null){
-						continue;
+						str = " invalid_word_" + bestindex;
 					}
 					Console.Write(str);
 				}

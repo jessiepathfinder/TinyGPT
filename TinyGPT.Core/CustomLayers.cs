@@ -47,7 +47,7 @@ namespace TinyGPT.Core
 		{
 			a1 = Linear(inputSize, hiddenSize);
 			a2 = Linear(hiddenSize, inputSize);
-
+			this.epsilon = epsilon;
 			RegisterComponents();
 		}
 
