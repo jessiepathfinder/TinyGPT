@@ -84,7 +84,7 @@ namespace TinyGPT.Chatbot
 			themodel.eval();
 			if (usecuda)
 			{
-				themodel.to(CUDA, ScalarType.Float32);
+				themodel.to(CUDA, ScalarType.BFloat16);
 			}
 
 			Span<ushort> buffer = stackalloc ushort[maxcontext];
