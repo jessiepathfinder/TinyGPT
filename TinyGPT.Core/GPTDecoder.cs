@@ -124,9 +124,9 @@ namespace TinyGPT.Core
 			padding = ConstantPad1d((convlookback, 0), 0);
 			keypad = ConstantPad1d((0, convlookback++), 0);
 
-			keylayer = Conv1d(size, size, convlookback);
-			valuelayer = Conv1d(size, size, convlookback);
-			querylayer = Conv1d(size, size, convlookback);
+			keylayer = Conv1d(size, size, convlookback, bias: false);
+			valuelayer = Conv1d(size, size, convlookback, bias: false);
+			querylayer = Conv1d(size, size, convlookback, bias: false);
 			positionalEncodingWeight = Parameter(randn(size));
 			positionalEncodingBias = Parameter(randn(size));
 			
