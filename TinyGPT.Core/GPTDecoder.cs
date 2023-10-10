@@ -169,33 +169,24 @@ namespace TinyGPT.Core
 					y = cat(tensors, 0);
 					y.MoveToOuterDisposeScope();
 				}
-				using(Tensor y2 =y){
-					y = keypad.forward(y2);
-				}
 				Tensor z;
-				using (NewDisposeScope()) {
+				using (NewDisposeScope())
+				{
+					using Tensor y2 = keypad.forward(y);
+					using Tensor keys = keylayer.forward(y2);
 
-					using Tensor keys = keylayer.forward(y);
-
-
-					using Tensor queries = querylayer.forward(y);
+					using Tensor queries = querylayer.forward(y2);
 
 					using Tensor values = valuelayer.forward(padding.forward(y)).add(ry);
 					z = functional.scaled_dot_product_attention(queries, keys, values, is_casual: true).MoveToOuterDisposeScope();
 				}
-				if(slice > 0){
-					using (Tensor p = z){
-						z = p.slice(0, slice, len, 1);
-					}
-					using (Tensor p = ry)
-					{
-						ry = p.slice(0, slice, len, 1);
-					}
+				y.Dispose();
+				ry.Dispose();
+				if (slice > 0){
+					using Tensor p = z;
+					z = p.slice(0, slice, len, 1);
 				}
-				using (Tensor p = z)
-				{
-					z = p.add(ry);
-				}
+
 				using (Tensor p = z){
 					z = CustomActivations.Norm(p, epsilon);
 				}
