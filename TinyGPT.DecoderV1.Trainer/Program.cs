@@ -257,10 +257,18 @@ namespace TinyGPT.DecoderV1.Trainer
 				float totalloss2 = loss.cpu().ToSingle();
 				Console.WriteLine("Batch loss: " + totalloss2);
 
-				if (totalloss2 < bestloss & savecooldown < 0)
+				bool defeat = totalloss2 < bestloss;
+				if (savecooldown < (defeat ? 0 : -240))
 				{
-					Console.WriteLine("Saving best policy...");
-					bestloss = totalloss2;
+					if (defeat)
+					{
+						Console.WriteLine("Saving best policy...");
+						bestloss = totalloss2;
+					}
+					else
+					{
+						Console.WriteLine("Saving policy...");
+					}
 					string savename = save + z;
 					simpleFullGPTDecoderUnit.save(savename);
 					savequeue.Enqueue(savename);
