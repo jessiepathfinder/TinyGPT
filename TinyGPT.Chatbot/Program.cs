@@ -59,14 +59,12 @@ namespace TinyGPT.Chatbot
 					{
 						const int latentTokenSize = 512;
 						maxcontext = 2048;
-						const int trainingBatches = 100000;
-						const int trainingMicroBatchSize = 16;
-						const int attentionHeads = 8;
+						const int attentionHeads = 12;
 						const int feedForwardHiddenSize = 2048;
 						const int feedForwardDepth = 3;
-						const int compressedViewSize = 1024;
+						const int compressedViewSize = 2048;
 						const int processorHiddenSize = 1024;
-						const int processorDepth = 3;
+						const int processorDepth = 4;
 
 						ModuleList<BERTDictionaryItem> dictionaryItems = new ModuleList<BERTDictionaryItem>();
 						for (int i = 0; i < tokenclasses; ++i)
