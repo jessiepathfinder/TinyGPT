@@ -20,15 +20,12 @@ namespace TinyGPT.DecoderV1.Trainer
 		//hyperparameters
 		private const int latentTokenSize = 512;
 		private const int maxContextSize = 2048;
-		private const int trainingBatches = 100000;
+		private const int trainingBatches = 200000;
 		private const int trainingMicroBatchSize = 16;
-		private const int attentionHeads = 12;
-		private const int feedForwardHiddenSize = 2048;
-		private const int feedForwardDepth = 3;
-		private const int compressedViewSize = 2048;
-		private const int processorHiddenSize = 1024;
-		private const int processorDepth = 4;
-		private const int attentionConvLookback = 3;
+		private const int attentionHeads = 8;
+		const int secondTierAttentionDepth = 3;
+		private const int compressedViewSize = 1024;
+		const int firstTierAttentionDepth = 3;
 
 
 
@@ -141,12 +138,12 @@ namespace TinyGPT.DecoderV1.Trainer
 			{
 				dictionaryItems.Add(new BERTDictionaryItem("", latentTokenSize));
 			}
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, feedForwardDepth, feedForwardHiddenSize, tokenclasses, compressedViewSize, processorDepth, processorHiddenSize, 1e-10, attentionConvLookback);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, compressedViewSize, firstTierAttentionDepth, secondTierAttentionDepth, 1e-8);
 			SimpleFullGPTDecoderUnit simpleFullGPTDecoderUnit = new SimpleFullGPTDecoderUnit(dictionaryItems, notchatgpt, "");
 
 			simpleFullGPTDecoderUnit.to(CUDA, ScalarType.BFloat16);
 
-			Adam adam = new Adam(notchatgpt.parameters(), lr: 1e-4, 0.95, weight_decay: 1e-6, amsgrad: true, eps: 1e-9);
+			Adam adam = new Adam(notchatgpt.parameters(), lr: 1e-4, 0.95, weight_decay: 0.01, amsgrad: true, eps: 1e-8);
 			SGD sgd = SGD(dictionaryItems.parameters(), 1e-4);
 			LRScheduler learningRateScheduler = ExponentialLR(adam, 0.999, 0, true);
 			LRScheduler learningRateScheduler2 = ExponentialLR(sgd, 0.999, 0, false);
@@ -167,6 +164,10 @@ namespace TinyGPT.DecoderV1.Trainer
 			Barrier barrier2 = new Barrier(threads + 1);
 			Tensor[] actualTensors = new Tensor[trainingMicroBatchSize];
 			ushort[][] expectedClasses = new ushort[trainingMicroBatchSize][];
+			for (int i = 1; i < trainingMicroBatchSize; ++i)
+			{
+				expectedClasses[i] = tokenized[RandomNumberGenerator.GetInt32(0, wqlen2)];
+			}
 			for (int i = 0; i < threads; ++i)
 			{
 				int z = i;
@@ -176,7 +177,7 @@ namespace TinyGPT.DecoderV1.Trainer
 						barrier1.SignalAndWait();
 						for (int k = z; k < trainingMicroBatchSize; k += threads)
 						{
-							ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2)];
+							ushort[] example = expectedClasses[k];
 
 							int split = example[0];
 							Span<ushort> view = example.AsSpan(1, split);
@@ -187,7 +188,6 @@ namespace TinyGPT.DecoderV1.Trainer
 								estimate.MoveToOuterDisposeScope();
 								actualTensors[k] = estimate;
 							}
-							expectedClasses[k] = example;
 						}
 						barrier2.SignalAndWait();
 					}
@@ -207,9 +207,8 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			for (int z = 0, savecooldown = 15; z < trainingBatches; ++z, --savecooldown)
 			{
-
-
 				Console.WriteLine("Forward pass batch #" + z);
+				expectedClasses[z % trainingMicroBatchSize] = tokenized[RandomNumberGenerator.GetInt32(0, wqlen2)];
 				using var d2 = NewDisposeScope();
 				adam.zero_grad();
 				sgd.zero_grad();

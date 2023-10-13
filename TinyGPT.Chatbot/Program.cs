@@ -59,19 +59,17 @@ namespace TinyGPT.Chatbot
 					{
 						const int latentTokenSize = 512;
 						maxcontext = 2048;
-						const int attentionHeads = 12;
-						const int feedForwardHiddenSize = 2048;
-						const int feedForwardDepth = 3;
-						const int compressedViewSize = 2048;
-						const int processorHiddenSize = 1024;
-						const int processorDepth = 4;
+						const int attentionHeads = 8;
+						const int secondTierAttentionDepth = 3;
+						const int compressedViewSize = 1024;
+						const int firstTierAttentionDepth = 3;
 
 						ModuleList<BERTDictionaryItem> dictionaryItems = new ModuleList<BERTDictionaryItem>();
 						for (int i = 0; i < tokenclasses; ++i)
 						{
 							dictionaryItems.Add(new BERTDictionaryItem("", latentTokenSize));
 						}
-						GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, feedForwardDepth, feedForwardHiddenSize, tokenclasses, compressedViewSize, processorDepth, processorHiddenSize, 1e-9, 3);
+						GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, compressedViewSize, firstTierAttentionDepth, secondTierAttentionDepth, 1e-8);
 						themodel = new SimpleFullGPTDecoderUnit(dictionaryItems, notchatgpt, "");
 
 					}
@@ -111,7 +109,7 @@ namespace TinyGPT.Chatbot
 					Tensor tensor;
 					float[] probs;
 					using (var ds = NewDisposeScope()){
-						tensor = themodel.Forward(buffer.Slice(0, i)).softmax(-1).cpu();
+						tensor = themodel.Forward(buffer.Slice(0, i)).cpu();
 						tensor.MoveToOuterDisposeScope();
 					}
 					using(tensor){
