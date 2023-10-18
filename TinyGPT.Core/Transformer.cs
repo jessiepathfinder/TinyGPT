@@ -53,35 +53,7 @@ namespace TinyGPT.Core
 
 
 	public static class Transformer{
-		public static Tensor SingleQueryDotProductAttention(Tensor query, Tensor keys, Tensor transposedValues)
-		{
-			using Tensor a = matmul(query, keys);
-			using Tensor b = a.div(Math.Sqrt(query.size(0)));
-			using Tensor c = b.softmax(-1);
-			return matmul(c, transposedValues);
-		}
 
-		public static Tensor PositionalEncodingV2(Tensor input, Tensor weights, Tensor biases, int index)
-		{
-			Tensor x;
-			using (DisposeScope disposeScope = NewDisposeScope()){
-				x = input.add(weights.mul(index).add(biases).sin());
-				x.MoveToOuterDisposeScope();
-			}
-			return x;
-		}
-		public static void EncodePositionV2(ReadOnlySpan<Tensor> span, Span<Tensor> outputs, Tensor weights, Tensor biases)
-		{
-			int len = span.Length;
-			if (outputs.Length < len)
-			{
-				throw new ArgumentOutOfRangeException("output can't be smaller than input");
-			}
-			for (int ctr = 0; ctr < len; ++ctr)
-			{
-				outputs[ctr] = PositionalEncodingV2(span[ctr], weights, biases, ctr);
-			}
-		}
 
 		public static int Tokenize(IReadOnlyDictionary<string, ushort> dict, Span<ushort> output, string str, int maxtokensize, int specialTokenClasses)
 		{
@@ -109,7 +81,6 @@ namespace TinyGPT.Core
 			}
 			return pos;
 		}
-		private static readonly ArrayPool<(Tensor, Tensor, Tensor)> arrayPool1 = ArrayPool<(Tensor, Tensor, Tensor)>.Create();
 		private static readonly long[] shape1 = { -1 };
 		private static readonly long[] shape2 = { 1, -1 };
 

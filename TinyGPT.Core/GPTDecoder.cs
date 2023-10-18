@@ -120,7 +120,6 @@ namespace TinyGPT.Core
 
 		private readonly Parameter positionalEncodingWeight;
 		private readonly Parameter positionalEncodingBias;
-		private readonly double epsilon;
 		private readonly ModuleList<JITNetLayer> JITLayers = new ModuleList<JITNetLayer>();
 
 		public SimpleAttentionHead(string name, int size, int depth, double epsilon) : base(name)
@@ -129,8 +128,6 @@ namespace TinyGPT.Core
 			positionalEncodingWeight = Parameter(randn(size));
 			positionalEncodingBias = Parameter(randn(size));
 
-
-			this.epsilon = epsilon;
 			for (int i = 0; i < depth; ++i)
 			{
 				JITLayers.Add(new JITNetLayer("", size, epsilon));
@@ -190,7 +187,6 @@ namespace TinyGPT.Core
 		private readonly ModuleList<JITNetLayer> finaljit = new ModuleList<JITNetLayer>();
 
 		private readonly int attentionHeadsCount;
-
 		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int tokenClasses, int compressedViewSize, int firstTierAttentionDepth, int secondTierAttentionDepth, double epsilon) : base(name)
 		{
 			if (attentionHeadsCount < 1)

@@ -20,7 +20,7 @@ namespace TinyGPT.Chatbot
 			{
 				datadir += Path.DirectorySeparatorChar;
 			}
-			Console.WriteLine("Loading dictioanry...");
+			Console.WriteLine("Loading dictionary...");
 			IReadOnlyDictionary<string, ushort>? dict = JsonConvert.DeserializeObject<IReadOnlyDictionary<string, ushort>>(File.ReadAllText(datadir + "encoder.json"));
 			if (dict is null)
 			{
@@ -36,13 +36,15 @@ namespace TinyGPT.Chatbot
 				tokenclasses = Math.Max(val, tokenclasses);
 			}
 
-			//2 magic token types
-			tokenclasses += 3;
+			//4 magic token types
+			tokenclasses += 5;
 			string[] decode = new string[tokenclasses + 1];
+			decode[3] = " [START_UNSAFE]";
+			decode[2] = " [START_SQUAD_QUESTION]";
 			int maxtokensize = 0;
 			foreach(KeyValuePair<string, ushort> keyValuePair in dict){
 				string key = keyValuePair.Key;
-				decode[keyValuePair.Value + 2] = key;
+				decode[keyValuePair.Value + 4] = key;
 				maxtokensize = Math.Max(maxtokensize, key.Length);
 			}
 			Console.WriteLine("Loading model...");
@@ -60,7 +62,7 @@ namespace TinyGPT.Chatbot
 						const int latentTokenSize = 512;
 						maxcontext = 2048;
 						const int attentionHeads = 8;
-						const int secondTierAttentionDepth = 3;
+						const int secondTierAttentionDepth = 5;
 						const int compressedViewSize = 1024;
 						const int firstTierAttentionDepth = 3;
 
@@ -96,25 +98,27 @@ namespace TinyGPT.Chatbot
 					continue;
 				}
 				Console.Write("TinyGPT: ");
-				int intokens = Transformer.Tokenize(dict, buffer, input, maxtokensize, 2);
+				int intokens = Transformer.Tokenize(dict, buffer, input, maxtokensize, 4);
 				if(intokens > maxinsize){
 					Console.WriteLine("too big!");
 					continue;
 				}
+				int prev = 1;
 				buffer[intokens] = 0; //[STARTGPT]
-				bool first = true;
-				for(int i = intokens + 1; i < maxcontext; ++i){
-					double best = -1;
+				for (int i = intokens + 1; i < maxcontext; ++i){
+					double best = double.NegativeInfinity;
 					int bestindex = 1;
 					Tensor tensor;
-					float[] probs;
 					using (var ds = NewDisposeScope()){
-						tensor = themodel.Forward(buffer.Slice(0, i)).cpu();
+						tensor = themodel.Forward(buffer.Slice(0, i)).softmax(0).cpu();
 						tensor.MoveToOuterDisposeScope();
 					}
 					using(tensor){
 						for (int z = 0; z < tokenclasses; ++z)
 						{
+							if(z == prev){
+								continue;
+							}
 							double my = tensor[z].ToScalar().ToDouble();
 							if (my > best)
 							{
@@ -124,20 +128,18 @@ namespace TinyGPT.Chatbot
 							}
 						}
 					}
-
+					prev = bestindex;
+					
+					buffer[i] = (ushort)bestindex;
 					if (bestindex == 1){
-						if(first){
-							continue;
-						}
 						break;
 					}
-					first = false;
 					string? str = decode[bestindex];
-					buffer[i] = (ushort)bestindex;
+
 					if (str is null){
 						str = " invalid_word_" + bestindex;
 					}
-					Console.Write(str);
+					Console.Write(str + "(" + best + ")");
 				}
 				Console.WriteLine();
 				Console.WriteLine("==================================================");

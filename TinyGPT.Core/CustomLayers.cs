@@ -16,61 +16,36 @@ namespace TinyGPT.Core
 {
 	public static class CustomActivations
 	{
-
+		private static readonly long[] dims = new long[] {1};
 		public static Tensor LeakySoftplus(Tensor input)
 		{
 			using Tensor a = input / 16;
 			using Tensor b = softplus(input, 1, 20);
 			return a.add(b);
 		}
-		public static Tensor SwishDerivative(Tensor input) {
+		public static Tensor Norm(Tensor input, double epsilon)
+		{
+			using DisposeScope disposeScope = NewDisposeScope();
+			return input.div(input.square().sum(1, true).sqrt().add(epsilon)).MoveToOuterDisposeScope();
+
+		}
+		public static Tensor SwishDerivative(Tensor input)
+		{
 			using DisposeScope disposeScope = NewDisposeScope();
 			Tensor sigmoid = input.sigmoid();
-			
+
 			return sigmoid.neg().add(1).mul(input).add(1).mul(sigmoid).MoveToOuterDisposeScope();
-		}
-		public static Tensor Norm(Tensor input, double epsilon){
-			using DisposeScope disposeScope = NewDisposeScope();
-			return input.div(input.square().mean().sqrt().add(epsilon)).MoveToOuterDisposeScope();
-
-		}
-	}
-
-
-	public sealed class JessieNetLayer : Module<Tensor, Tensor>
-	{
-		private readonly Linear a1;
-		private readonly Linear a2;
-		private readonly double epsilon;
-
-		public JessieNetLayer(string name, int inputSize, int hiddenSize, double epsilon) : base(name)
-		{
-			a1 = Linear(inputSize, hiddenSize);
-			a2 = Linear(hiddenSize, inputSize);
-			this.epsilon = epsilon;
-			RegisterComponents();
-		}
-
-		public override Tensor forward(Tensor input)
-		{
-			using DisposeScope disposeScope = NewDisposeScope();
-			Tensor res = CustomActivations.Norm(a2.forward(CustomActivations.SwishDerivative(a1.forward(input))).add(input), epsilon);
-			
-
-			res.MoveToOuterDisposeScope();
-			return res;
 		}
 	}
 	public sealed class JITNetLayer : Module<Tensor, Tensor>
 	{
 		//In JIT training, some weights are computed at runtime instead of train-time
+		//Stolen from GPT-2 (except different activation function)
 		private readonly Linear key;
 		private readonly Linear query;
 		private readonly Linear value;
-		private readonly Linear compute;
-
-		private readonly Parameter bias;
-
+		private readonly Linear compute1;
+		private readonly Linear compute2;
 
 
 		private readonly double epsilon;
@@ -80,8 +55,8 @@ namespace TinyGPT.Core
 			key = Linear(inputSize, inputSize, false);
 			query = Linear(inputSize, inputSize, false);
 			value = Linear(inputSize, inputSize, false);
-			compute = Linear(inputSize, inputSize);
-			bias = new Parameter(zeros(1, inputSize));
+			compute1 = Linear(inputSize, inputSize);
+			compute2 = Linear(inputSize, inputSize);
 
 			this.epsilon = epsilon;
 			RegisterComponents();
@@ -89,7 +64,8 @@ namespace TinyGPT.Core
 
 		public override Tensor forward(Tensor input)
 		{
-			using(NewDisposeScope()){
+			using (NewDisposeScope())
+			{
 				Tensor z;
 				{
 					using Tensor k = key.forward(input);
@@ -97,17 +73,7 @@ namespace TinyGPT.Core
 					using Tensor q = query.forward(input);
 					z = scaled_dot_product_attention(q, k, v, is_casual: true);
 				}
-				using (Tensor p = z)
-				{
-					z = p.add(bias);
-				}
-				using (Tensor p = z)
-				{
-					z = CustomActivations.SwishDerivative(p);
-				}
-				using(Tensor p = z){
-					z = compute.forward(p);
-				}
+
 				using (Tensor p = z)
 				{
 					z = p.add(input);
@@ -116,7 +82,26 @@ namespace TinyGPT.Core
 				{
 					z = CustomActivations.Norm(p, epsilon);
 				}
-				return z.MoveToOuterDisposeScope();
+
+				Tensor y;
+
+				using (Tensor p = compute1.forward(z))
+				{
+					y = CustomActivations.SwishDerivative(p);
+				}
+				using (Tensor p = y)
+				{
+					y = compute2.forward(p);
+				}
+				using (Tensor p = y)
+				{
+					using (z){
+						y = p.add(z);
+					}
+				}
+				
+
+				return CustomActivations.Norm(y, epsilon).MoveToOuterDisposeScope();
 			}
 		}
 	}
