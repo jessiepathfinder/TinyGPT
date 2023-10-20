@@ -23,32 +23,47 @@ namespace TinyGPT.Core
 			using Tensor b = softplus(input, 1, 20);
 			return a.add(b);
 		}
-		public static Tensor Norm(Tensor input, double epsilon)
-		{
-			using DisposeScope disposeScope = NewDisposeScope();
-			return input.div(input.square().sum(1, true).sqrt().add(epsilon)).MoveToOuterDisposeScope();
-
-		}
 		public static Tensor SwishDerivative(Tensor input)
 		{
 			using DisposeScope disposeScope = NewDisposeScope();
 			Tensor sigmoid = input.sigmoid();
 
-			return sigmoid.neg().add(1).mul(input).add(1).mul(sigmoid).MoveToOuterDisposeScope();
+			Tensor y;
+			using(Tensor x = sigmoid.neg()){
+				y = x.add(1);
+			}
+			using(Tensor x = y){
+				y = x.mul(input);
+			}
+			using (Tensor x = y)
+			{
+				y = x.mul(sigmoid);
+			}
+			using (Tensor x = y)
+			{
+				y = x.add(sigmoid);
+			}
+
+			return y.MoveToOuterDisposeScope();
 		}
 	}
 	public sealed class JITNetLayer : Module<Tensor, Tensor>
 	{
-		//In JIT training, some weights are computed at runtime instead of train-time
-		//Stolen from GPT-2 (except different activation function)
+		//In JITNet, attention weights are computed at infer-time
+		//While in conv, attention weights are computed at train-time
+
+		//Borrowed from GPT-2 (except swish derivative activation)
+
+		//I love JIT training!
+
 		private readonly Linear key;
 		private readonly Linear query;
 		private readonly Linear value;
 		private readonly Linear compute1;
 		private readonly Linear compute2;
 
-
-		private readonly double epsilon;
+		private readonly LayerNorm layerNorm1;
+		private readonly LayerNorm layerNorm2;
 
 		public JITNetLayer(string name, int inputSize, double epsilon) : base(name)
 		{
@@ -57,8 +72,9 @@ namespace TinyGPT.Core
 			value = Linear(inputSize, inputSize, false);
 			compute1 = Linear(inputSize, inputSize);
 			compute2 = Linear(inputSize, inputSize);
+			layerNorm1 = LayerNorm(inputSize, epsilon);
+			layerNorm2 = LayerNorm(inputSize, epsilon);
 
-			this.epsilon = epsilon;
 			RegisterComponents();
 		}
 
@@ -80,8 +96,9 @@ namespace TinyGPT.Core
 				}
 				using (Tensor p = z)
 				{
-					z = CustomActivations.Norm(p, epsilon);
+					z = layerNorm1.forward(input);
 				}
+
 
 				Tensor y;
 
@@ -89,19 +106,21 @@ namespace TinyGPT.Core
 				{
 					y = CustomActivations.SwishDerivative(p);
 				}
+
 				using (Tensor p = y)
 				{
 					y = compute2.forward(p);
 				}
 				using (Tensor p = y)
 				{
-					using (z){
+					using(z){
 						y = p.add(z);
 					}
 				}
-				
+				using(y){
+					return layerNorm2.forward(y).MoveToOuterDisposeScope();
+				}
 
-				return CustomActivations.Norm(y, epsilon).MoveToOuterDisposeScope();
 			}
 		}
 	}

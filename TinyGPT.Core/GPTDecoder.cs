@@ -68,34 +68,11 @@ namespace TinyGPT.Core
 		{
 			int len = input.Length;
 			Tensor[] tensors = new Tensor[len];
-			try
+			for (int i = 0; i < len; ++i)
 			{
-				for (int i = 0; i < len; ++i)
-				{
-					tensors[i] = dictionaryItems[input[i]].parameters1;
-				}
-				return tensors;
+				tensors[i] = dictionaryItems[input[i]].parameters1;
 			}
-			catch
-			{
-				for (int i = 0; i < len; ++i)
-				{
-					Tensor tensor = tensors[i];
-					if (tensor is null)
-					{
-						continue;
-					}
-					try
-					{
-						tensor.Dispose();
-					}
-					catch
-					{
-
-					}
-				}
-				throw;
-			}
+			return tensors;
 
 		}
 	}

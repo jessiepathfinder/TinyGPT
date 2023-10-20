@@ -36,15 +36,13 @@ namespace TinyGPT.Chatbot
 				tokenclasses = Math.Max(val, tokenclasses);
 			}
 
-			//4 magic token types
-			tokenclasses += 5;
+			//2 magic token types
+			tokenclasses += 3;
 			string[] decode = new string[tokenclasses + 1];
-			decode[3] = " [START_UNSAFE]";
-			decode[2] = " [START_SQUAD_QUESTION]";
 			int maxtokensize = 0;
 			foreach(KeyValuePair<string, ushort> keyValuePair in dict){
 				string key = keyValuePair.Key;
-				decode[keyValuePair.Value + 4] = key;
+				decode[keyValuePair.Value + 2] = key;
 				maxtokensize = Math.Max(maxtokensize, key.Length);
 			}
 			Console.WriteLine("Loading model...");
@@ -61,10 +59,10 @@ namespace TinyGPT.Chatbot
 					{
 						const int latentTokenSize = 512;
 						maxcontext = 2048;
-						const int attentionHeads = 8;
-						const int secondTierAttentionDepth = 5;
-						const int compressedViewSize = 1024;
-						const int firstTierAttentionDepth = 3;
+						const int attentionHeads = 12;
+						const int secondTierAttentionDepth = 0;
+						const int compressedViewSize = 2048;
+						const int firstTierAttentionDepth = 7;
 
 						ModuleList<BERTDictionaryItem> dictionaryItems = new ModuleList<BERTDictionaryItem>();
 						for (int i = 0; i < tokenclasses; ++i)
@@ -98,12 +96,11 @@ namespace TinyGPT.Chatbot
 					continue;
 				}
 				Console.Write("TinyGPT: ");
-				int intokens = Transformer.Tokenize(dict, buffer, input, maxtokensize, 4);
+				int intokens = Transformer.Tokenize(dict, buffer, input, maxtokensize, 2);
 				if(intokens > maxinsize){
 					Console.WriteLine("too big!");
 					continue;
 				}
-				int prev = 1;
 				buffer[intokens] = 0; //[STARTGPT]
 				for (int i = intokens + 1; i < maxcontext; ++i){
 					double best = double.NegativeInfinity;
@@ -116,9 +113,6 @@ namespace TinyGPT.Chatbot
 					using(tensor){
 						for (int z = 0; z < tokenclasses; ++z)
 						{
-							if(z == prev){
-								continue;
-							}
 							double my = tensor[z].ToScalar().ToDouble();
 							if (my > best)
 							{
@@ -128,7 +122,6 @@ namespace TinyGPT.Chatbot
 							}
 						}
 					}
-					prev = bestindex;
 					
 					buffer[i] = (ushort)bestindex;
 					if (bestindex == 1){
@@ -139,7 +132,7 @@ namespace TinyGPT.Chatbot
 					if (str is null){
 						str = " invalid_word_" + bestindex;
 					}
-					Console.Write(str + "(" + best + ")");
+					Console.Write(str);
 				}
 				Console.WriteLine();
 				Console.WriteLine("==================================================");
