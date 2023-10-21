@@ -26,11 +26,9 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int latentTokenSize = 512;
 		private const int maxContextSize = 2048;
 		private const int trainingBatches = 200000;
-		private const int trainingMicroBatchSize = 16;
+		private const int trainingMicroBatchSize = 12;
 		private const int attentionHeads = 8;
-		const int secondTierAttentionDepth = 7;
-		private const int compressedViewSize = 1024;
-		const int firstTierAttentionDepth = 1;
+		private const int firstTierAttentionDepth = 8;
 
 
 
@@ -79,7 +77,6 @@ namespace TinyGPT.DecoderV1.Trainer
 			Thread[] thrlist = new Thread[threads];
 			int wqlen2 = wqlength;
 			string progresstail = new StringBuilder("/").Append(wqlen2).Append(" question-answer pairs").ToString();
-			int[] classcounter = new int[tokenclasses];
 
 			for (int z = 0; z < threads; ++z)
 			{
@@ -131,10 +128,6 @@ namespace TinyGPT.DecoderV1.Trainer
 						}
 					flush:
 						++size1;
-						for (int rdx = encsize2 + 2; rdx < size1; ++rdx)
-						{
-							Interlocked.Increment(ref classcounter[encbuffer[rdx]]);
-						}
 						encbuffer[0] = encsize;
 						tokenized[a] = encbuffer[..(size1)].ToArray();
 
@@ -165,7 +158,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			{
 				dictionaryItems.Add(new BERTDictionaryItem("", latentTokenSize));
 			}
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, compressedViewSize, firstTierAttentionDepth, secondTierAttentionDepth, 1e-9);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 1e-9);
 			SimpleFullGPTDecoderUnit simpleFullGPTDecoderUnit = new SimpleFullGPTDecoderUnit(dictionaryItems, notchatgpt, "");
 
 			simpleFullGPTDecoderUnit.to(CUDA, ScalarType.BFloat16);
@@ -177,8 +170,9 @@ namespace TinyGPT.DecoderV1.Trainer
 			adam.to(CUDA);
 			adam2.to(CUDA);
 
-			notchatgpt.train(true);
-
+			simpleFullGPTDecoderUnit.train(true);
+			NLLLoss crossEntropyLoss = new NLLLoss(reduction: nn.Reduction.Mean);
+			crossEntropyLoss.to(CUDA, ScalarType.Float64);
 
 
 
@@ -198,18 +192,9 @@ namespace TinyGPT.DecoderV1.Trainer
 			{
 				thr.Join();
 			}
-			Console.WriteLine("Computing class weights...");
-			Tensor classweights;
-			using (NewDisposeScope())
-			{
-				Tensor cw1 = tensor(classcounter, device: CUDA).minimum(1);
-				classweights = cw1.sum().to(ScalarType.Float64).div(cw1.to(ScalarType.Float64)).MoveToOuterDisposeScope();
-			}
 			Console.WriteLine("Optimizing memory usage...");
 
-#pragma warning disable CS8600 // Converting null literal or possible null value to non-nullable type.
-			classcounter = null;
-#pragma warning restore CS8600 // Converting null literal or possible null value to non-nullable type.
+
 			questionanswering = null;
 
 			GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
@@ -245,8 +230,7 @@ namespace TinyGPT.DecoderV1.Trainer
 				thread.Name = "Forward thread #" + i;
 				thread.Start();
 			}
-			NLLLoss crossEntropyLoss = new NLLLoss(classweights, nn.Reduction.Mean);
-			crossEntropyLoss.to(CUDA, ScalarType.Float64);
+
 
 
 

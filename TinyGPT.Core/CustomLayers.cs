@@ -16,7 +16,6 @@ namespace TinyGPT.Core
 {
 	public static class CustomActivations
 	{
-		private static readonly long[] dims = new long[] {1};
 		public static Tensor LeakySoftplus(Tensor input)
 		{
 			using Tensor a = input / 16;
@@ -47,34 +46,88 @@ namespace TinyGPT.Core
 			return y.MoveToOuterDisposeScope();
 		}
 	}
-	public sealed class JITNetLayer : Module<Tensor, Tensor>
+	public sealed class ResidualAttentionLayer : Module<Tensor, Tensor>
 	{
-		//In JITNet, attention weights are computed at infer-time
-		//While in conv, attention weights are computed at train-time
-
-		//Borrowed from GPT-2 (except swish derivative activation)
-
-		//I love JIT training!
-
 		private readonly Linear key;
-		private readonly Linear query;
 		private readonly Linear value;
-		private readonly Linear compute1;
-		private readonly Linear compute2;
+		private readonly Linear query;
+		private readonly LayerNorm norm;
 
-		private readonly LayerNorm layerNorm1;
-		private readonly LayerNorm layerNorm2;
 
-		public JITNetLayer(string name, int inputSize, double epsilon) : base(name)
+		public ResidualAttentionLayer(string name, int inputSize, double epsilon) : base(name)
 		{
 			key = Linear(inputSize, inputSize, false);
-			query = Linear(inputSize, inputSize, false);
 			value = Linear(inputSize, inputSize, false);
+			query = Linear(inputSize, inputSize, false);
+			norm = LayerNorm(inputSize, epsilon);
+			RegisterComponents();
+		}
+
+		public override Tensor forward(Tensor input)
+		{
+			using (NewDisposeScope()) {
+				Tensor r;
+				{
+					using Tensor k = key.forward(input);
+					using Tensor q = value.forward(input);
+					using Tensor v = query.forward(input);
+					r = scaled_dot_product_attention(q, k, v, is_casual: true);
+				}
+				using(Tensor x = r){
+					r = r.add(input);
+				}
+				return norm.forward(r).MoveToOuterDisposeScope();
+			}
+		}
+	}
+
+	public sealed class ResidualComputeLayer : Module<Tensor, Tensor>
+	{
+		private readonly Linear compute1;
+		private readonly Linear compute2;
+		private readonly LayerNorm norm;
+
+
+		public ResidualComputeLayer(string name, int inputSize, double epsilon) : base(name)
+		{
 			compute1 = Linear(inputSize, inputSize);
 			compute2 = Linear(inputSize, inputSize);
-			layerNorm1 = LayerNorm(inputSize, epsilon);
-			layerNorm2 = LayerNorm(inputSize, epsilon);
+			norm = LayerNorm(inputSize, epsilon);
+			RegisterComponents();
+		}
 
+		public override Tensor forward(Tensor input)
+		{
+			using (NewDisposeScope())
+			{
+				Tensor r;
+				using (Tensor x = compute1.forward(input))
+				{
+					r = CustomActivations.SwishDerivative(x);
+				}
+				using(Tensor x = r){
+					r = compute2.forward(x);
+				}
+				using (Tensor x = r)
+				{
+					r = x.add(input);
+				}
+				using(r){
+					return norm.forward(r).MoveToOuterDisposeScope();
+				}
+			}
+		}
+	}
+
+	public sealed class AttentionBlock : Module<Tensor, Tensor>
+	{
+		private readonly ResidualAttentionLayer attention;
+		private readonly ResidualComputeLayer compute;
+
+		public AttentionBlock(string name, int inputSize, double epsilon) : base(name)
+		{
+			attention = new ResidualAttentionLayer("", inputSize, epsilon);
+			compute = new ResidualComputeLayer("", inputSize, epsilon);
 			RegisterComponents();
 		}
 
@@ -83,44 +136,10 @@ namespace TinyGPT.Core
 			using (NewDisposeScope())
 			{
 				Tensor z;
-				{
-					using Tensor k = key.forward(input);
-					using Tensor v = value.forward(input);
-					using Tensor q = query.forward(input);
-					z = scaled_dot_product_attention(q, k, v, is_casual: true);
+				using(Tensor x = attention.forward(input)){
+					z = compute.forward(x);
 				}
-
-				using (Tensor p = z)
-				{
-					z = p.add(input);
-				}
-				using (Tensor p = z)
-				{
-					z = layerNorm1.forward(input);
-				}
-
-
-				Tensor y;
-
-				using (Tensor p = compute1.forward(z))
-				{
-					y = CustomActivations.SwishDerivative(p);
-				}
-
-				using (Tensor p = y)
-				{
-					y = compute2.forward(p);
-				}
-				using (Tensor p = y)
-				{
-					using(z){
-						y = p.add(z);
-					}
-				}
-				using(y){
-					return layerNorm2.forward(y).MoveToOuterDisposeScope();
-				}
-
+				return z.MoveToOuterDisposeScope();
 			}
 		}
 	}

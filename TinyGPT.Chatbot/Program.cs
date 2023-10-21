@@ -59,17 +59,15 @@ namespace TinyGPT.Chatbot
 					{
 						const int latentTokenSize = 512;
 						maxcontext = 2048;
-						const int attentionHeads = 12;
-						const int secondTierAttentionDepth = 0;
-						const int compressedViewSize = 2048;
-						const int firstTierAttentionDepth = 7;
+						const int attentionHeads = 8;
+						const int firstTierAttentionDepth = 8;
 
 						ModuleList<BERTDictionaryItem> dictionaryItems = new ModuleList<BERTDictionaryItem>();
 						for (int i = 0; i < tokenclasses; ++i)
 						{
 							dictionaryItems.Add(new BERTDictionaryItem("", latentTokenSize));
 						}
-						GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, compressedViewSize, firstTierAttentionDepth, secondTierAttentionDepth, 1e-8);
+						GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 1e-8);
 						themodel = new SimpleFullGPTDecoderUnit(dictionaryItems, notchatgpt, "");
 
 					}
@@ -102,6 +100,7 @@ namespace TinyGPT.Chatbot
 					continue;
 				}
 				buffer[intokens] = 0; //[STARTGPT]
+				int prev = 1;
 				for (int i = intokens + 1; i < maxcontext; ++i){
 					double best = double.NegativeInfinity;
 					int bestindex = 1;
@@ -116,17 +115,20 @@ namespace TinyGPT.Chatbot
 							double my = tensor[z].ToScalar().ToDouble();
 							if (my > best)
 							{
-								
+								if(z == prev){
+									//continue;
+								}
 								best = my;
 								bestindex = z;
 							}
 						}
 					}
 					
-					buffer[i] = (ushort)bestindex;
 					if (bestindex == 1){
 						break;
 					}
+					buffer[i] = (ushort)bestindex;
+					prev = bestindex;
 					string? str = decode[bestindex];
 
 					if (str is null){

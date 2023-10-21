@@ -97,7 +97,7 @@ namespace TinyGPT.Core
 
 		private readonly Parameter positionalEncodingWeight;
 		private readonly Parameter positionalEncodingBias;
-		private readonly ModuleList<JITNetLayer> JITLayers = new ModuleList<JITNetLayer>();
+		private readonly ModuleList<AttentionBlock> attentionLayers = new ModuleList<AttentionBlock>();
 
 		public SimpleAttentionHead(string name, int size, int depth, double epsilon) : base(name)
 		{
@@ -107,7 +107,7 @@ namespace TinyGPT.Core
 
 			for (int i = 0; i < depth; ++i)
 			{
-				JITLayers.Add(new JITNetLayer("", size, epsilon));
+				attentionLayers.Add(new AttentionBlock("", size, epsilon));
 			}
 			RegisterComponents();
 		}
@@ -142,10 +142,10 @@ namespace TinyGPT.Core
 					y = cat(tensors, 0);
 					y.MoveToOuterDisposeScope();
 				}
-				foreach (JITNetLayer jitlayer in JITLayers)
+				foreach (AttentionBlock attentionBlock in attentionLayers)
 				{
 					using Tensor p = y;
-					y = jitlayer.forward(p);
+					y = attentionBlock.forward(p);
 				}
 
 				y.MoveToOuterDisposeScope();
@@ -159,30 +159,21 @@ namespace TinyGPT.Core
 	{
 
 		private readonly Linear finalLayer;
-		private readonly Linear viewCompressor;
 		private readonly ModuleList<SimpleAttentionHead> attentionHeads = new ModuleList<SimpleAttentionHead>();
-		private readonly ModuleList<JITNetLayer> finaljit = new ModuleList<JITNetLayer>();
 
 		private readonly int attentionHeadsCount;
-		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int tokenClasses, int compressedViewSize, int firstTierAttentionDepth, int secondTierAttentionDepth, double epsilon) : base(name)
+		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int tokenClasses, int firstTierAttentionDepth, double epsilon) : base(name)
 		{
 			if (attentionHeadsCount < 1)
 			{
 				throw new ArgumentNullException(nameof(attentionHeadsCount));
 			}
 
-			int totalwidth = latentTokenSize * attentionHeadsCount;
 			for (int i = 0; i < attentionHeadsCount; ++i)
 			{
 				attentionHeads.Add(new SimpleAttentionHead("", latentTokenSize, firstTierAttentionDepth, epsilon));
 			}
-			for (int i = 0; i < secondTierAttentionDepth; ++i)
-			{
-				finaljit.Add(new JITNetLayer("", compressedViewSize, epsilon));
-			}
-			viewCompressor = Linear(totalwidth, compressedViewSize);
-			finalLayer = Linear(compressedViewSize, tokenClasses);
-
+			finalLayer = Linear(latentTokenSize * attentionHeadsCount, tokenClasses);
 			this.attentionHeadsCount = attentionHeadsCount;
 			RegisterComponents();
 		}
@@ -214,22 +205,8 @@ namespace TinyGPT.Core
 					y = cat(attentions, 1);
 					y.MoveToOuterDisposeScope();
 				}
-				using (Tensor z = y)
-				{
-					y = viewCompressor.forward(z);
-				}
-				using (Tensor z = y)
-				{
-					y = CustomActivations.LeakySoftplus(z);
-				}
-				foreach (JITNetLayer jitlayer in finaljit)
-				{
-					using Tensor z = y;
-					y = jitlayer.forward(z);
-				}
-				using (Tensor z = y)
-				{
-					y = z.slice(0, slice, len, 1);
+				using(Tensor x = y){
+					y = x.slice(0, slice, len, 1);
 				}
 				using (y)
 				{
