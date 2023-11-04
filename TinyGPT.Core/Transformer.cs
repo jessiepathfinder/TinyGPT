@@ -65,13 +65,13 @@ namespace TinyGPT.Core
 			{
 				StringBuilder sb = new StringBuilder();
 				int token = -1;
-				for (int i = ++ctr, stop = Math.Min(i + maxtokensize, len); i < stop; ++i)
+				for (int i = ctr++, stop = Math.Min(i + maxtokensize, len); i < stop; ++i)
 				{
 					sb.Append(str[i]);
 					if (dict.TryGetValue(sb.ToString(), out ushort val))
 					{
 						token = val;
-						ctr = i;
+						ctr = i + 1;
 					}
 				}
 				if (token > -1)

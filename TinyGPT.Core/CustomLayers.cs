@@ -54,12 +54,12 @@ namespace TinyGPT.Core
 		private readonly LayerNorm norm;
 
 
-		public ResidualAttentionLayer(string name, int inputSize, double epsilon) : base(name)
+		public ResidualAttentionLayer(string name, int inputSize, bool affine_norm, double epsilon) : base(name)
 		{
 			key = Linear(inputSize, inputSize, false);
 			value = Linear(inputSize, inputSize, false);
 			query = Linear(inputSize, inputSize, false);
-			norm = LayerNorm(inputSize, epsilon);
+			norm = LayerNorm(inputSize, epsilon, affine_norm);
 			RegisterComponents();
 		}
 
@@ -88,11 +88,11 @@ namespace TinyGPT.Core
 		private readonly LayerNorm norm;
 
 
-		public ResidualComputeLayer(string name, int inputSize, double epsilon) : base(name)
+		public ResidualComputeLayer(string name, int inputSize, bool affine_norm, double epsilon) : base(name)
 		{
 			compute1 = Linear(inputSize, inputSize);
 			compute2 = Linear(inputSize, inputSize);
-			norm = LayerNorm(inputSize, epsilon);
+			norm = LayerNorm(inputSize, epsilon, affine_norm);
 			RegisterComponents();
 		}
 
@@ -117,6 +117,24 @@ namespace TinyGPT.Core
 				}
 			}
 		}
+		public void Regularize(double weight_l1_term, double bias_l2_term){
+			Tensor weight = compute1.weight ?? throw new Exception("No weight found (should not reach here)");
+			Tensor bias = compute1.bias ?? throw new Exception("No bias found (should not reach here)");
+
+			Tensor weightgrad = weight.grad() ?? throw new Exception("Weight does not have grad");
+			Tensor biasgrad = bias.grad() ?? throw new Exception("Bias does not have grad");
+
+			using (NewDisposeScope()){
+				using(Tensor x = weight.sign()){
+					x.mul_(weight_l1_term);
+					weightgrad.add_(x);
+				}
+				using (Tensor x = bias.mul(bias_l2_term))
+				{
+					biasgrad.add_(x);
+				}
+			}
+		}
 	}
 
 	public sealed class AttentionBlock : Module<Tensor, Tensor>
@@ -126,8 +144,8 @@ namespace TinyGPT.Core
 
 		public AttentionBlock(string name, int inputSize, double epsilon) : base(name)
 		{
-			attention = new ResidualAttentionLayer("", inputSize, epsilon);
-			compute = new ResidualComputeLayer("", inputSize, epsilon);
+			attention = new ResidualAttentionLayer("", inputSize, true, epsilon);
+			compute = new ResidualComputeLayer("", inputSize, false, epsilon);
 			RegisterComponents();
 		}
 
@@ -141,6 +159,10 @@ namespace TinyGPT.Core
 				}
 				return z.MoveToOuterDisposeScope();
 			}
+		}
+		public void Regularize(double weight_l1_term, double bias_l2_term)
+		{
+			compute.Regularize(weight_l1_term, bias_l2_term);
 		}
 	}
 

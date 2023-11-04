@@ -33,77 +33,25 @@ namespace TinyGPT.Core
 			return Forward(input.Span);
 		}
 	}
-	public sealed class SimpleFullGPTDecoderUnit : FullGPTDecoderUnit
-	{
-		private readonly ModuleList<BERTDictionaryItem> dictionaryItems;
-		private readonly GPTDecoderUnit decoder;
-		private static readonly ArrayPool<Tensor> tensorpool = ArrayPool<Tensor>.Create();
 
-		public SimpleFullGPTDecoderUnit(ModuleList<BERTDictionaryItem> dictionaryItems, GPTDecoderUnit decoder, string name) : base(name)
-		{
-			this.dictionaryItems = dictionaryItems ?? throw new ArgumentNullException(nameof(dictionaryItems));
-			this.decoder = decoder ?? throw new ArgumentNullException(nameof(decoder));
-			RegisterComponents();
-		}
-
-		public override Tensor Forward(ReadOnlySpan<ushort> input)
-		{
-			int len = input.Length;
-			Tensor[] tensors = tensorpool.Rent(len);
-			try
-			{
-				for (int i = 0; i < len; ++i)
-				{
-					tensors[i] = dictionaryItems[input[i]].parameters1;
-				}
-				return decoder.Forward(tensors.AsSpan(0, len));
-			}
-			finally
-			{
-				Misc.EraseReturnAsync(tensorpool, tensors, len);
-			}
-
-		}
-		public Tensor[] EncodeOnly(ReadOnlySpan<ushort> input)
-		{
-			int len = input.Length;
-			Tensor[] tensors = new Tensor[len];
-			for (int i = 0; i < len; ++i)
-			{
-				tensors[i] = dictionaryItems[input[i]].parameters1;
-			}
-			return tensors;
-
-		}
-	}
-	public abstract class GPTDecoderUnit : Module<ReadOnlyMemory<Tensor>, Tensor>
-	{
-		protected GPTDecoderUnit(string name) : base(name)
-		{
-		}
-
-		protected GPTDecoderUnit(nint handle, nint boxedHandle) : base(handle, boxedHandle)
-		{
-		}
-
-		public abstract Tensor Forward(ReadOnlySpan<Tensor> input);
-		public sealed override Tensor forward(ReadOnlyMemory<Tensor> input)
-		{
-			return Forward(input.Span);
-		}
-	}
 	public sealed class SimpleAttentionHead : Module<ReadOnlyMemory<Tensor>, Tensor>
 	{
 
 		private readonly Parameter positionalEncodingWeight;
 		private readonly Parameter positionalEncodingBias;
 		private readonly ModuleList<AttentionBlock> attentionLayers = new ModuleList<AttentionBlock>();
+		public void Regularize(double weight_l1_term, double bias_l2_term)
+		{
+			foreach(AttentionBlock attentionBlock in attentionLayers){
+				attentionBlock.Regularize(weight_l1_term, bias_l2_term);
+			}
+		}
 
 		public SimpleAttentionHead(string name, int size, int depth, double epsilon) : base(name)
 		{
 
-			positionalEncodingWeight = Parameter(randn(size));
-			positionalEncodingBias = Parameter(randn(size));
+			positionalEncodingWeight = Parameter(randn(1, size));
+			positionalEncodingBias = Parameter(randn(1, size));
 
 			for (int i = 0; i < depth; ++i)
 			{
@@ -116,7 +64,6 @@ namespace TinyGPT.Core
 		{
 			return Forward(input.Span);
 		}
-		private static readonly long[] shape2 = new long[] { 1, -1 };
 		public Tensor Forward(ReadOnlySpan<Tensor> input)
 		{
 			int len = input.Length;
@@ -134,7 +81,7 @@ namespace TinyGPT.Core
 					{
 						using (NewDisposeScope())
 						{
-							Tensor x = input[i].add(positionalEncodingWeight.mul(i).add(positionalEncodingBias).cos()).reshape(shape2);
+							Tensor x = input[i].add(positionalEncodingWeight.mul(i).add(positionalEncodingBias).cos());
 							x.MoveToOuterDisposeScope();
 							tensors[i] = x;
 						}
@@ -155,11 +102,36 @@ namespace TinyGPT.Core
 
 
 	}
-	public sealed class GPTDecoderUnitV1 : GPTDecoderUnit
+	public sealed class GPTDecoderUnitV1 : FullGPTDecoderUnit
 	{
-
+		private static readonly ArrayPool<Tensor> arrayPool = ArrayPool<Tensor>.Create();
 		private readonly Linear finalLayer;
 		private readonly ModuleList<SimpleAttentionHead> attentionHeads = new ModuleList<SimpleAttentionHead>();
+		private readonly Linear wordEmbedding;
+		public void Regularize(double weight_l1_term, double bias_l2_term)
+		{
+			foreach (SimpleAttentionHead attentionHead in attentionHeads)
+			{
+				attentionHead.Regularize(weight_l1_term, bias_l2_term);
+			}
+		}
+		public Tensor ComputeKLDivergenceLoss(){
+			Tensor wordweights = wordEmbedding.weight ?? throw new Exception("word embeddings does not have weight (should not reach here)");
+			using(NewDisposeScope()){
+				Tensor mean = wordweights.mean();
+				
+				Tensor y;
+				using(Tensor x = wordweights.sub(mean)){
+					y = x.square();
+				}
+				Tensor stddev_square;
+				using(y){
+					stddev_square = y.mean();
+				}
+
+				return stddev_square.add(mean.square()).sub(stddev_square.log()).sub(1).MoveToOuterDisposeScope();
+			}
+		}
 
 		private readonly int attentionHeadsCount;
 		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int tokenClasses, int firstTierAttentionDepth, double epsilon) : base(name)
@@ -173,34 +145,40 @@ namespace TinyGPT.Core
 			{
 				attentionHeads.Add(new SimpleAttentionHead("", latentTokenSize, firstTierAttentionDepth, epsilon));
 			}
-			finalLayer = Linear(latentTokenSize * attentionHeadsCount, tokenClasses);
+			finalLayer = Linear(latentTokenSize * attentionHeadsCount, latentTokenSize);
+			wordEmbedding = Linear(latentTokenSize, tokenClasses, false);
 			this.attentionHeadsCount = attentionHeadsCount;
 			RegisterComponents();
 		}
-		private static readonly long[] shape = new long[] { -1 };
-		private static readonly long[] shape2 = new long[] { 1, -1 };
-		public override Tensor Forward(ReadOnlySpan<Tensor> input)
-		{
-			using Tensor x = Forward(input, input.Length - 1);
-			return x[0];
-		}
-		public Tensor Forward(ReadOnlySpan<Tensor> input, int slice)
+
+		public Tensor Forward(ReadOnlySpan<ushort> input, int slice)
 		{
 			int len = input.Length;
 			if (len == 0)
 			{
 				throw new IndexOutOfRangeException(nameof(input));
 			}
-
+			Tensor wordweights = wordEmbedding.weight ?? throw new Exception("word embeddings does not have weight (should not reach here)");
 			using (NewDisposeScope())
 			{
 				Tensor y;
 				using (NewDisposeScope())
 				{
 					Tensor[] attentions = new Tensor[attentionHeadsCount];
-					for (int i = 0; i < attentionHeadsCount; ++i)
-					{
-						attentions[i] = attentionHeads[i].Forward(input);
+
+					Tensor[] borrowed = arrayPool.Rent(len);
+					try{
+						using DisposeScope disposeScope = NewDisposeScope();
+						for(int i = 0; i < len; ++i){
+							borrowed[i] = wordweights[input[i]];
+						}
+						ReadOnlySpan<Tensor> span = borrowed.AsSpan(0, len);
+						for (int i = 0; i < attentionHeadsCount; ++i)
+						{
+							attentions[i] = attentionHeads[i].Forward(span).MoveToOuterDisposeScope();
+						}
+					} finally{
+						Misc.EraseReturnAsync(arrayPool, borrowed, len);
 					}
 					y = cat(attentions, 1);
 					y.MoveToOuterDisposeScope();
@@ -208,13 +186,20 @@ namespace TinyGPT.Core
 				using(Tensor x = y){
 					y = x.slice(0, slice, len, 1);
 				}
-				using (y)
+				using (Tensor x = y)
 				{
-					return finalLayer.forward(y).MoveToOuterDisposeScope();
+					y = finalLayer.forward(x);
+				}
+				using(y){
+					return wordEmbedding.forward(y).MoveToOuterDisposeScope();
 				}
 			}
 		}
 
+		public override Tensor Forward(ReadOnlySpan<ushort> input)
+		{
+			return Forward(input, 0);
+		}
 	}
 
 
