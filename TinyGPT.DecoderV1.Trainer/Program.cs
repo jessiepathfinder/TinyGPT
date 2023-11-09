@@ -24,12 +24,11 @@ namespace TinyGPT.DecoderV1.Trainer
 
 		//hyperparameters
 		private const int latentTokenSize = 512;
-		private const int maxContextSize = 2048;
+		private const int maxContextSize = 1024;
 		private const int trainingBatches = 200000;
 		private const int trainingMicroBatchSize = 16;
 		private const int attentionHeads = 8;
-		private const int firstTierAttentionDepth = 12;
-		private const int compressedPreFinalSize = 2048;
+		private const int firstTierAttentionDepth = 4;
 
 
 
@@ -98,12 +97,13 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 						int size1 = Transformer.Tokenize(dict, encbuffer2, pair[0], maxlen, 2);
-						ushort encsize = (ushort)Math.Min(size1 + 1, maxContextSize - 1);
-						int encsize2 = size1;
 						if (size1 == maxContextSize)
 						{
 							continue;
 						}
+						ushort encsize = (ushort)size1;
+						int encsize2 = size1;
+
 						encbuffer[size1++] = 0; //user-to-GPT context switch
 						if (size1 == maxContextSize)
 						{
@@ -118,7 +118,8 @@ namespace TinyGPT.DecoderV1.Trainer
 						if (size1 < maxContextSize)
 						{
 							encbuffer[size1++] = 1; //GPT-to-user context switch
-													//Memory regularization
+
+							//Memory regularization
 							int copysize = Math.Min(maxContextSize - size1, encsize2);
 							if (copysize > 0)
 							{
@@ -129,6 +130,7 @@ namespace TinyGPT.DecoderV1.Trainer
 						}
 
 						++size1;
+
 						encbuffer[0] = encsize;
 						tokenized[a] = encbuffer[..(size1)].ToArray();
 
@@ -154,12 +156,11 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			Console.WriteLine("Initializing model...");
 			InitializeDeviceType(DeviceType.CUDA);
-			NLLLoss crossEntropyLoss = new NLLLoss(reduction: nn.Reduction.Mean);
-			crossEntropyLoss.to(CUDA, ScalarType.Float64);
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 1e-9);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, 1e-7);
 			notchatgpt.to(CUDA, ScalarType.BFloat16);
-			Adam adam = new Adam(notchatgpt.parameters(), lr: 1e-5, amsgrad: true, eps: 1e-8);
-			LRScheduler learningRateScheduler = ExponentialLR(adam, 0.9998, 0, true);
+			Adam adam = new Adam(notchatgpt.parameters(), lr: 1e-4, eps: 1e-7);
+			LRScheduler learningRateScheduler = ExponentialLR(adam, 0.9999, 0, true);
+			NLLLoss crossEntropyLoss = new NLLLoss(reduction: nn.Reduction.Mean);
 
 			adam.to(CUDA);
 
@@ -184,9 +185,9 @@ namespace TinyGPT.DecoderV1.Trainer
 			{
 				thr.Join();
 			}
-			Console.WriteLine("Computing class weights...");
+
 			Console.WriteLine("Optimizing memory usage...");
-			questionanswering = null;
+			questionanswering = null; ;
 
 			GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
 			GC.WaitForPendingFinalizers();
@@ -238,10 +239,6 @@ namespace TinyGPT.DecoderV1.Trainer
 				adam.zero_grad();
 				Tensor loss;
 				barrier1.SignalAndWait();
-				Tensor KLLoss;
-				using (Tensor KLLoss2 = notchatgpt.ComputeKLDivergenceLoss()){
-					KLLoss = KLLoss2.mul(0.01);
-				}
 				barrier2.SignalAndWait();
 
 				int totallen = 0;
@@ -256,9 +253,9 @@ namespace TinyGPT.DecoderV1.Trainer
 					ushort[] arr = expectedClasses[p];
 					int arrlen = arr.Length;
 
-					for (int pos2 = arr[0] + 2; pos2 < arrlen; ++pos2, ++pos)
+					for (int pos2 = arr[0] + 2; pos2 < arrlen;)
 					{
-						ec2[pos] = arr[pos2];
+						ec2[pos++] = arr[pos2++];
 					}
 
 				}
@@ -276,24 +273,47 @@ namespace TinyGPT.DecoderV1.Trainer
 					Tensor logits = tensor(ec2, ScalarType.Int64, CUDA);
 
 					loss = crossEntropyLoss.forward(lsp, logits);
-					using (Tensor x = loss)
-					{
-						loss = x.add(KLLoss);
-					}
+
 					Console.WriteLine("Backpropagate batch #" + z);
 					using (NewDisposeScope())
 					{
 						loss.backward();
 					}
+
 					Console.WriteLine("Regularize gradients batch #" + z);
-					notchatgpt.Regularize(0.01, 0.01);
+					/*
+					double sum = 0;
+					foreach (Tensor tensor in notchatgpt.parameters())
+					{
+						Tensor sum1;
+						using (Tensor squared = tensor.grad().square())
+						{
+							sum1 = squared.sum();
+						}
+						Tensor sum2;
+						using (sum1)
+						{
+							sum2 = sum1.cpu();
+						}
+						using(sum2){
+							sum += sum2.ToDouble();
+						}
+					}
+					
+					Console.WriteLine("Elucidian magnitude of all gradients: " + Math.Sqrt(sum));
+					
+					*/
+					//notchatgpt.Regularize(0.001, 0.001);
+					//nn.utils.clip_grad_value_(notchatgpt.parameters(), 1);
+
+
+
 
 					for (int p = 0; p < trainingMicroBatchSize; ++p)
 					{
 						actualTensors[p].Dispose();
 					}
 					loss = loss.cpu().MoveToOuterDisposeScope();
-					KLLoss = KLLoss.cpu().MoveToOuterDisposeScope();
 				}
 
 
@@ -302,7 +322,6 @@ namespace TinyGPT.DecoderV1.Trainer
 
 				double totalloss2 = loss.ToDouble();
 				Console.WriteLine("Batch loss: " + totalloss2);
-				Console.WriteLine("KL loss: " + KLLoss.ToDouble());
 
 				bool defeat = totalloss2 < bestloss;
 				if (savecooldown < (defeat ? 0 : -240))

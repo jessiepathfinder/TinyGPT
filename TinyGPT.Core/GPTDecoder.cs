@@ -34,120 +34,145 @@ namespace TinyGPT.Core
 		}
 	}
 
-	public sealed class SimpleAttentionHead : Module<ReadOnlyMemory<Tensor>, Tensor>
-	{
 
-		private readonly Parameter positionalEncodingWeight;
-		private readonly Parameter positionalEncodingBias;
-		private readonly ModuleList<AttentionBlock> attentionLayers = new ModuleList<AttentionBlock>();
-		public void Regularize(double weight_l1_term, double bias_l2_term)
-		{
-			foreach(AttentionBlock attentionBlock in attentionLayers){
-				attentionBlock.Regularize(weight_l1_term, bias_l2_term);
-			}
-		}
-
-		public SimpleAttentionHead(string name, int size, int depth, double epsilon) : base(name)
-		{
-
-			positionalEncodingWeight = Parameter(randn(1, size));
-			positionalEncodingBias = Parameter(randn(1, size));
-
-			for (int i = 0; i < depth; ++i)
-			{
-				attentionLayers.Add(new AttentionBlock("", size, epsilon));
-			}
-			RegisterComponents();
-		}
-
-		public override Tensor forward(ReadOnlyMemory<Tensor> input)
-		{
-			return Forward(input.Span);
-		}
-		public Tensor Forward(ReadOnlySpan<Tensor> input)
-		{
-			int len = input.Length;
-			if (len == 0)
-			{
-				throw new IndexOutOfRangeException(nameof(input));
-			}
-			using (NewDisposeScope())
-			{
-				Tensor y;
-				using (NewDisposeScope())
-				{
-					Tensor[] tensors = new Tensor[len];
-					for (int i = 0; i < len; ++i)
-					{
-						using (NewDisposeScope())
-						{
-							Tensor x = input[i].add(positionalEncodingWeight.mul(i).add(positionalEncodingBias).cos());
-							x.MoveToOuterDisposeScope();
-							tensors[i] = x;
-						}
-					}
-					y = cat(tensors, 0);
-					y.MoveToOuterDisposeScope();
-				}
-				foreach (AttentionBlock attentionBlock in attentionLayers)
-				{
-					using Tensor p = y;
-					y = attentionBlock.forward(p);
-				}
-
-				y.MoveToOuterDisposeScope();
-				return y;
-			}
-		}
-
-
-	}
 	public sealed class GPTDecoderUnitV1 : FullGPTDecoderUnit
 	{
-		private static readonly ArrayPool<Tensor> arrayPool = ArrayPool<Tensor>.Create();
-		private readonly Linear finalLayer;
-		private readonly ModuleList<SimpleAttentionHead> attentionHeads = new ModuleList<SimpleAttentionHead>();
-		private readonly Linear wordEmbedding;
-		public void Regularize(double weight_l1_term, double bias_l2_term)
+
+		private sealed class GPTHiddenLayer : Module<Tensor, Tensor>
 		{
-			foreach (SimpleAttentionHead attentionHead in attentionHeads)
+			private readonly Parameter residual;
+			private readonly LayerNorm layerNorm;
+			private readonly Linear tail;
+			private readonly Module<Tensor, Tensor> module;
+			public GPTHiddenLayer(Module<Tensor, Tensor> module, int size, double epsilon) : base("")
 			{
-				attentionHead.Regularize(weight_l1_term, bias_l2_term);
+				residual = Parameter(ones(1, size));
+				layerNorm = LayerNorm(size, epsilon, false);
+				tail = Misc.CreateXavierInitializedLinear(size, size, true);
+				this.module = module;
+				RegisterComponents();
+			}
+
+			public sealed override Tensor forward(Tensor input)
+			{
+				using (NewDisposeScope())
+				{
+					Tensor x;
+					using (Tensor y = module.forward(input))
+					{
+						x = tail.forward(y);
+					}
+					Tensor z;
+					using (Tensor y = input.mul(residual))
+					{
+						using (x)
+						{
+							z = y.add(x);
+						}
+					}
+					using (z)
+					{
+						return layerNorm.forward(z).MoveToOuterDisposeScope();
+					}
+
+				}
 			}
 		}
-		public Tensor ComputeKLDivergenceLoss(){
-			Tensor wordweights = wordEmbedding.weight ?? throw new Exception("word embeddings does not have weight (should not reach here)");
-			using(NewDisposeScope()){
-				Tensor mean = wordweights.mean();
-				
-				Tensor y;
-				using(Tensor x = wordweights.sub(mean)){
-					y = x.square();
+		private sealed class GPTAttentionLayer : Module<Tensor, Tensor>
+		{
+			private readonly int headcount;
+			private readonly int latentTokenSize;
+			private readonly ModuleList<AttentionLayer> attentionHeads = new ModuleList<AttentionLayer>();
+			public GPTAttentionLayer(int latentTokenSize, int heads) : base("")
+			{
+				headcount = heads;
+				this.latentTokenSize = latentTokenSize;
+				for (int i = 0; i < heads; ++i)
+				{
+					attentionHeads.Add(new AttentionLayer("", latentTokenSize));
 				}
-				Tensor stddev_square;
-				using(y){
-					stddev_square = y.mean();
+				RegisterComponents();
+			}
+
+			public override Tensor forward(Tensor input)
+			{
+				int heads = headcount;
+				int latentTokenSize = this.latentTokenSize;
+				Tensor[] attnheads = input.split(latentTokenSize, 1);
+				for (int i = 0; i < heads; ++i)
+				{
+					using Tensor x = attnheads[i];
+					attnheads[i] = attentionHeads[i].forward(x);
+				}
+				try
+				{
+					return cat(attnheads, 1);
+				}
+				finally
+				{
+					for (int i = 0; i < heads; ++i)
+					{
+						attnheads[i].Dispose();
+					}
 				}
 
-				return stddev_square.add(mean.square()).sub(stddev_square.log()).sub(1).MoveToOuterDisposeScope();
+			}
+		}
+		private sealed class GPTComputeLayer : Module<Tensor, Tensor>
+		{
+			private readonly Linear linear;
+			public GPTComputeLayer(int size) : base("")
+			{
+				linear = Misc.CreateXavierInitializedLinear(size, size, true);
+				RegisterComponents();
+			}
+
+			public override Tensor forward(Tensor input)
+			{
+				using Tensor x = linear.forward(input);
+				return x.gelu().MoveToOuterDisposeScope();
 			}
 		}
 
-		private readonly int attentionHeadsCount;
-		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int tokenClasses, int firstTierAttentionDepth, double epsilon) : base(name)
+
+
+
+		private readonly Linear outputEmbedding;
+		private readonly ModuleList<GPTHiddenLayer> layers = new ModuleList<GPTHiddenLayer>();
+		private readonly Tensor wordEmbedding;
+
+
+		private readonly double scale;
+
+
+
+		private readonly Parameter positionalEncodingBias;
+		private readonly Parameter positionalEncodingWeight;
+		private readonly int headcount;
+		//private readonly LayerNorm layerNorm;
+		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int tokenClasses, int coreDepth, double initialFrequency, double epsilon) : base(name)
 		{
 			if (attentionHeadsCount < 1)
 			{
 				throw new ArgumentNullException(nameof(attentionHeadsCount));
 			}
+			int fullsize = latentTokenSize * attentionHeadsCount;
+			positionalEncodingWeight = Parameter(randn(fullsize, 1).mul_(initialFrequency));
+			positionalEncodingBias = Parameter(zeros(fullsize, 1));
 
-			for (int i = 0; i < attentionHeadsCount; ++i)
+			for (int i = 0; i < coreDepth; ++i)
 			{
-				attentionHeads.Add(new SimpleAttentionHead("", latentTokenSize, firstTierAttentionDepth, epsilon));
+				layers.Add(new GPTHiddenLayer(new GPTAttentionLayer(latentTokenSize, attentionHeadsCount), fullsize, epsilon));
+				layers.Add(new GPTHiddenLayer(new GPTComputeLayer(fullsize), fullsize, epsilon));
 			}
-			finalLayer = Linear(latentTokenSize * attentionHeadsCount, latentTokenSize);
-			wordEmbedding = Linear(latentTokenSize, tokenClasses, false);
-			this.attentionHeadsCount = attentionHeadsCount;
+			layers.Add(new GPTHiddenLayer(new GPTAttentionLayer(latentTokenSize, attentionHeadsCount), fullsize, epsilon));
+
+			outputEmbedding = Misc.CreateXavierInitializedLinear(fullsize, latentTokenSize, true);
+
+			wordEmbedding = randn(latentTokenSize, tokenClasses);
+			scale = Math.Sqrt(latentTokenSize * 2);
+			headcount = attentionHeadsCount;
+			//layerNorm = LayerNorm(tokenClasses, epsilon);
 			RegisterComponents();
 		}
 
@@ -158,47 +183,88 @@ namespace TinyGPT.Core
 			{
 				throw new IndexOutOfRangeException(nameof(input));
 			}
-			Tensor wordweights = wordEmbedding.weight ?? throw new Exception("word embeddings does not have weight (should not reach here)");
 			using (NewDisposeScope())
 			{
-				Tensor y;
-				using (NewDisposeScope())
-				{
-					Tensor[] attentions = new Tensor[attentionHeadsCount];
 
-					Tensor[] borrowed = arrayPool.Rent(len);
-					try{
-						using DisposeScope disposeScope = NewDisposeScope();
-						for(int i = 0; i < len; ++i){
-							borrowed[i] = wordweights[input[i]];
-						}
-						ReadOnlySpan<Tensor> span = borrowed.AsSpan(0, len);
-						for (int i = 0; i < attentionHeadsCount; ++i)
-						{
-							attentions[i] = attentionHeads[i].Forward(span).MoveToOuterDisposeScope();
-						}
-					} finally{
-						Misc.EraseReturnAsync(arrayPool, borrowed, len);
+				int headcount = this.headcount;
+				Tensor[] all = new Tensor[len];
+				Tensor[] heads2 = new Tensor[headcount];
+				for (int i = 0; i < len; ++i)
+				{
+					long my = input[i];
+					Tensor n;
+					using (Tensor p = positionalEncodingWeight.mul(i))
+					{
+						n = p.add(positionalEncodingBias);
 					}
-					y = cat(attentions, 1);
-					y.MoveToOuterDisposeScope();
+					using (Tensor p = n)
+					{
+						n = p.sin();
+					}
+
+					Tensor z2;
+					using (Tensor z = wordEmbedding.slice(1, my, my + 1, 1))
+					{
+						for (int p = 0; p < headcount; ++p)
+						{
+							heads2[p] = z;
+						}
+						z2 = cat(heads2, 0);
+					}
+					using (z2)
+					{
+						using (n)
+						{
+							all[i] = z2.add(n);
+						}
+					}
+
 				}
-				using(Tensor x = y){
+
+				Tensor y;
+				using (Tensor c2 = cat(all, 1))
+				{
+					y = c2.transpose(0, 1);
+				}
+
+
+
+				foreach (GPTHiddenLayer hiddenLayer in layers)
+				{
+					using Tensor x = y;
+					y = hiddenLayer.forward(x);
+				}
+
+				using (Tensor x = y)
+				{
 					y = x.slice(0, slice, len, 1);
 				}
 				using (Tensor x = y)
 				{
-					y = finalLayer.forward(x);
+
+					y = outputEmbedding.forward(x);
 				}
-				using(y){
-					return wordEmbedding.forward(y).MoveToOuterDisposeScope();
+
+				using (Tensor x = y)
+				{
+					y = x.matmul(wordEmbedding);
+				}
+				using (y)
+				{
+					return y.div(scale).MoveToOuterDisposeScope();
 				}
 			}
 		}
 
 		public override Tensor Forward(ReadOnlySpan<ushort> input)
 		{
-			return Forward(input, 0);
+			using (NewDisposeScope())
+			{
+				using (Tensor x = Forward(input, input.Length - 1))
+				{
+					return x.squeeze(0).MoveToOuterDisposeScope();
+				}
+			}
 		}
 	}
 

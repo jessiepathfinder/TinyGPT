@@ -5,12 +5,19 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
+using TorchSharp.Modules;
 using static TorchSharp.torch;
+using static TorchSharp.torch.nn;
 
 namespace TinyGPT.Core
 {
 	public static class Misc
 	{
+		public static Linear CreateXavierInitializedLinear(int inputs, int outputs, bool bias){
+			Linear linear = Linear(inputs, outputs, bias);
+			init.xavier_normal_(linear.weight ?? throw new Exception("No weight found (should not reach here)"));
+			return linear;
+		}
 		public static void EraseReturnAsync<T>(ArrayPool<T> arrayPool, T[] array, int erase) where T : class
 		{
 			ThreadPool.QueueUserWorkItem(EraseReturn, (arrayPool, array, erase), true);
@@ -24,16 +31,22 @@ namespace TinyGPT.Core
 			x.arrayPool.Return(x.array);
 		}
 
-		public static Tensor ComputeSoftmaxLoss2(Tensor x, int expectedclass){
-			Tensor squared = x.square();
+		public static void AdaptiveLearningRateSGD(Tensor parameter, Tensor momentum, double beta, double baseLearningRate){
+			Tensor gradient = parameter.grad() ?? throw new Exception("No grad!");
 
-			return squared.sum().subtract(squared[expectedclass]).sqrt();
-		}
-		public static Tensor ComputeSigmoidFinalLoss(Tensor x, int expectedclass)
-		{
-			Tensor squared = x.square();
+			using(Tensor abs = momentum.abs()){
+				abs.mul_(baseLearningRate);
+				abs.mul_(gradient);
+				parameter.sub_(abs);
+			}
+			
 
-			return squared.sum().subtract(squared[expectedclass]).add(x[expectedclass].sub(1).square()).div(x.size(0)).sqrt();
+			momentum.mul_(beta);
+			using(Tensor sign = gradient.sign()) {
+				momentum.add_(sign, 1 - beta);
+			}
 		}
+
+
 	}
 }
