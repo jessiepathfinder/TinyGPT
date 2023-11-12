@@ -67,20 +67,30 @@ namespace TinyGPT.Core
 		{
 			using (NewDisposeScope())
 			{
-				Tensor r;
-				using (Tensor x2 = input.unsqueeze(0))
-				{
-					using Tensor k = key.forward(x2);
-					using Tensor q = query.forward(x2);
-					using Tensor v = value.forward(x2);
-					r = scaled_dot_product_attention(q, k, v, is_casual: true);
-				}
-
-
-				using (r)
-				{
-					return r.squeeze(0).MoveToOuterDisposeScope();
-				}
+				using Tensor k = key.forward(input);
+				using Tensor q = query.forward(input);
+				using Tensor v = value.forward(input);
+				return scaled_dot_product_attention(q, k, v, is_casual: true).MoveToOuterDisposeScope();
+			}
+		}
+		public Tensor Forward(Tensor input, Tensor? mask = null)
+		{
+			using (NewDisposeScope())
+			{
+				using Tensor k = key.forward(input);
+				using Tensor q = query.forward(input);
+				using Tensor v = value.forward(input);
+				return scaled_dot_product_attention(q, k, v, mask).MoveToOuterDisposeScope();
+			}
+		}
+		public Tensor Forward(Tensor a, Tensor b, Tensor? mask = null)
+		{
+			using (NewDisposeScope())
+			{
+				using Tensor k = key.forward(a);
+				using Tensor v = value.forward(a);
+				using Tensor q = query.forward(b);
+				return scaled_dot_product_attention(q, k, v, mask).MoveToOuterDisposeScope();
 			}
 		}
 	}

@@ -36,16 +36,7 @@ namespace TinyGPT.Chatbot
 				tokenclasses = Math.Max(val, tokenclasses);
 			}
 
-			//2 magic token types
-			tokenclasses += 3;
-			string[] decode = new string[tokenclasses + 1];
-			int maxtokensize = 0;
-			foreach (KeyValuePair<string, ushort> keyValuePair in dict)
-			{
-				string key = keyValuePair.Key;
-				decode[keyValuePair.Value + 2] = key;
-				maxtokensize = Math.Max(maxtokensize, key.Length);
-			}
+			int magicTokenClasses;
 			Console.WriteLine("Loading model...");
 			bool usecuda = cuda_is_available();
 			if (usecuda)
@@ -66,8 +57,8 @@ namespace TinyGPT.Chatbot
 						maxcontext = 2048;
 						const int attentionHeads = 8;
 						const int firstTierAttentionDepth = 4;
-
-
+						magicTokenClasses = 4;
+						tokenclasses += magicTokenClasses + 1;
 						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, 1e-7);
 
 					}
@@ -83,6 +74,16 @@ namespace TinyGPT.Chatbot
 			{
 				themodel.to(CUDA);
 			}
+			//4 magic token types
+			
+			string[] decode = new string[tokenclasses + 1];
+			int maxtokensize = 0;
+			foreach (KeyValuePair<string, ushort> keyValuePair in dict)
+			{
+				string key = keyValuePair.Key;
+				decode[keyValuePair.Value + magicTokenClasses] = key;
+				maxtokensize = Math.Max(maxtokensize, key.Length);
+			}
 
 			Span<ushort> buffer = stackalloc ushort[maxcontext];
 			int maxinsize = maxcontext - 2;
@@ -96,7 +97,7 @@ namespace TinyGPT.Chatbot
 					continue;
 				}
 				Console.Write("TinyGPT: ");
-				int intokens = Transformer.Tokenize(dict, buffer, input, maxtokensize, 2);
+				int intokens = Transformer.Tokenize(dict, buffer, input, maxtokensize, magicTokenClasses);
 				if (intokens > maxinsize)
 				{
 					Console.WriteLine("too big!");
@@ -111,7 +112,7 @@ namespace TinyGPT.Chatbot
 					Tensor tensor;
 					using (var ds = NewDisposeScope())
 					{
-						tensor = themodel.Forward(buffer.Slice(0, i)).softmax(0).cpu();
+						tensor = themodel.Forward(buffer.Slice(0, i)).cpu();
 						tensor.MoveToOuterDisposeScope();
 					}
 					using (tensor)
