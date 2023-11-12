@@ -12,6 +12,7 @@ using System.Xml.Schema;
 using TinyGPT.Core;
 using TorchSharp;
 using TorchSharp.Modules;
+using static System.Net.Mime.MediaTypeNames;
 using static TorchSharp.torch;
 using static TorchSharp.torch.optim;
 using static TorchSharp.torch.optim.lr_scheduler;
@@ -145,32 +146,39 @@ namespace TinyGPT.DecoderV1.Trainer
 						}
 						string ostr = pair[1];
 
-						int startsize = size1;
+						bool noninitial = false;
 						bool contribute = false;
 						int slicestr = 0;
 					encloop:
-						int newtokens = Transformer.Tokenize(dict, encbuffer2[startsize..], ostr.AsSpan(slicestr), maxlen, totalMagicTokens, out int slicestr1);
+						int newtokens = Transformer.Tokenize(dict, noninitial ? encbuffer2 : encbuffer2[size1..], ostr.AsSpan(slicestr), maxlen, totalMagicTokens, out int slicestr1);
 						slicestr += slicestr1;
-						contribute |= newtokens > 0;
 						size1 += newtokens;
 
 						int modsize = size1 % maxContextSize;
-						if (newtokens == 0){
-							if (modsize == 0)
-							{
-								stackbuilder.Push(encbuffer2.ToArray());
-								startsize = 0;
-								goto encloop;
-							}
-						} else{
-							stackbuilder.Push(encbuffer2[..(startsize + newtokens)].ToArray());
+						if (modsize == 0 & newtokens > 0)
+						{
+							stackbuilder.Push(encbuffer2.ToArray());
+							contribute = true;
+							noninitial = true;
+							goto encloop;
 						}
 
 
 						if (modsize > 0)
 						{
-							encbuffer2[modsize] = 1; //GPT-to-user context switch
+							encbuffer2[modsize++] = 1; //GPT-to-user context switch
 						}
+						else
+						{
+							encbuffer2[maxContextSize - 1] = 1; //GPT-to-user context switch
+						}
+						if (newtokens > 0)
+						{
+							contribute = true;
+							stackbuilder.Push(encbuffer2[..(modsize)].ToArray());
+						}
+
+
 						DecoderBlocksLinkedList? decoderBlocks = null;
 #pragma warning disable CS8600 // Converting null literal or possible null value to non-nullable type.
 						while (stackbuilder.TryPop(out ushort[] array)){
@@ -184,7 +192,7 @@ namespace TinyGPT.DecoderV1.Trainer
 						if(decoderBlocks is { } && contribute)
 						{
 							alldata.Add((encsize, decoderBlocks));
-							if(startsize > 0){
+							if(noninitial){
 								safedata.Add((encsize, decoderBlocks));
 							}
 						} else{
@@ -276,40 +284,44 @@ namespace TinyGPT.DecoderV1.Trainer
 							{
 								continue;
 							}
-							ushort encsize = (ushort)(size1 + size2);
+							
 							encbuffer3[size1++] = 0; //[START_GPT]
 							if (size1 == stop)
 							{
 								continue;
 							}
-							int startsize = size1;
+							size1 += size2;
+							int encsize = size1;
+							bool noninitial = false;
 							bool contribute = false;
 							int slicestr = 0;
 						encloop:
-							int newtokens = Transformer.Tokenize(dict, encbuffer2[startsize..], text.AsSpan(slicestr), maxlen, totalMagicTokens, out int slicestr1);
+							int newtokens = Transformer.Tokenize(dict, noninitial ? encbuffer2 : encbuffer2[size1..], text.AsSpan(slicestr), maxlen, totalMagicTokens, out int slicestr1);
 							slicestr += slicestr1;
-							contribute |= newtokens > 0;
 							size1 += newtokens;
 
 							int modsize = size1 % maxContextSize;
-							if (newtokens == 0)
+							if (modsize == 0 & newtokens > 0)
 							{
-								if (modsize == 0)
-								{
-									stackbuilder.Push(encbuffer2.ToArray());
-									startsize = 0;
-									goto encloop;
-								}
-							}
-							else
-							{
-								stackbuilder.Push(encbuffer2.Slice(0, startsize + newtokens).ToArray());
+								stackbuilder.Push(encbuffer2.ToArray());
+								noninitial = true;
+								contribute = true;
+								goto encloop;
 							}
 
 
 							if (modsize > 0)
 							{
-								encbuffer2[modsize] = 1; //GPT-to-user context switch
+								encbuffer2[modsize++] = 1; //GPT-to-user context switch
+							}
+							else
+							{
+								encbuffer2[maxContextSize - 1] = 1; //GPT-to-user context switch
+							}
+							if (newtokens > 0)
+							{
+								contribute = true;
+								stackbuilder.Push(encbuffer2[..(modsize)].ToArray());
 							}
 							DecoderBlocksLinkedList? decoderBlocks = null;
 #pragma warning disable CS8600 // Converting null literal or possible null value to non-nullable type.
@@ -326,7 +338,7 @@ namespace TinyGPT.DecoderV1.Trainer
 							if (decoderBlocks is { } && contribute)
 							{
 								alldata.Add((encsize, decoderBlocks));
-								if (startsize > 0)
+								if (noninitial)
 								{
 									safedata.Add((encsize, decoderBlocks));
 								}
