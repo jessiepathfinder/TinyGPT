@@ -6,6 +6,7 @@ using System.ComponentModel.Design;
 using System.Drawing;
 using System.Net.Http.Headers;
 using System.Runtime.ExceptionServices;
+using System.Runtime.Intrinsics.X86;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Schema;
@@ -22,7 +23,8 @@ namespace TinyGPT.DecoderV1.Trainer
 {
 	internal static class Program
 	{
-		private sealed class DecoderBlocksLinkedList{
+		private sealed class DecoderBlocksLinkedList
+		{
 			public readonly DecoderBlocksLinkedList? next;
 			public readonly ushort[] data;
 
@@ -41,7 +43,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int attentionHeads = 8;
 		private const int firstTierAttentionDepth = 5;
 		private const int totalMagicTokens = 4;
-		private const int optimizerUpdateInterval = 3;
+		private const int optimizerUpdateInterval = 4;
 
 		[JsonObject(MemberSerialization.Fields)]
 		private sealed class WikipediaArticle
@@ -146,56 +148,66 @@ namespace TinyGPT.DecoderV1.Trainer
 						}
 						string ostr = pair[1];
 
-						bool noninitial = false;
+						int size4 = size1;
 						bool contribute = false;
 						int slicestr = 0;
+						ushort[]? prevblk = null;
 					encloop:
-						int newtokens = Transformer.Tokenize(dict, noninitial ? encbuffer2 : encbuffer2[size1..], ostr.AsSpan(slicestr), maxlen, totalMagicTokens, out int slicestr1);
+						int newtokens = Transformer.Tokenize(dict, encbuffer2[size4..], ostr.AsSpan(slicestr), maxlen, totalMagicTokens, out int slicestr1);
 						slicestr += slicestr1;
 						size1 += newtokens;
 
-						int modsize = size1 % maxContextSize;
-						if (modsize == 0 & newtokens > 0)
+						int modsize = (prevblk is null ? size1 : (size1 + 1)) % maxContextSize;
+						if (modsize == 0)
 						{
-							stackbuilder.Push(encbuffer2.ToArray());
-							contribute = true;
-							noninitial = true;
-							goto encloop;
-						}
-
-
-						if (modsize > 0)
-						{
-							encbuffer2[modsize++] = 1; //GPT-to-user context switch
+							if (newtokens > 0)
+							{
+								prevblk = encbuffer2.ToArray();
+								stackbuilder.Push(prevblk);
+								contribute = true;
+								size4 = 1;
+								encbuffer2[0] = encbuffer2[maxContextSize - 1];
+								goto encloop;
+							}
 						}
 						else
 						{
-							encbuffer2[maxContextSize - 1] = 1; //GPT-to-user context switch
-						}
-						if (newtokens > 0)
-						{
-							contribute = true;
-							stackbuilder.Push(encbuffer2[..(modsize)].ToArray());
+							encbuffer2[modsize++] = 1; //GPT-to-user context switch
+
+							if (newtokens > 0)
+							{
+								contribute = true;
+								stackbuilder.Push(encbuffer2[..(modsize)].ToArray());
+							}
+							else if (prevblk is { })
+							{
+								prevblk[maxContextSize - 1] = 1; //[END_GPT]
+							}
 						}
 
 
 						DecoderBlocksLinkedList? decoderBlocks = null;
 #pragma warning disable CS8600 // Converting null literal or possible null value to non-nullable type.
-						while (stackbuilder.TryPop(out ushort[] array)){
-							if(array.Length == 1){
+						while (stackbuilder.TryPop(out ushort[] array))
+						{
+							if (array.Length == 1)
+							{
 								Console.WriteLine("WARNING: array of length 1 found");
 								break;
 							}
 							decoderBlocks = new DecoderBlocksLinkedList(decoderBlocks, array);
 						}
 #pragma warning restore CS8600 // Converting null literal or possible null value to non-nullable type.
-						if(decoderBlocks is { } && contribute)
+						if (decoderBlocks is { } && contribute)
 						{
 							alldata.Add((encsize, decoderBlocks));
-							if(noninitial){
+							if (prevblk is null)
+							{
 								safedata.Add((encsize, decoderBlocks));
 							}
-						} else{
+						}
+						else
+						{
 							Console.WriteLine("WARNING: empty output found");
 						}
 
@@ -284,44 +296,49 @@ namespace TinyGPT.DecoderV1.Trainer
 							{
 								continue;
 							}
-							
+
 							encbuffer3[size1++] = 0; //[START_GPT]
 							if (size1 == stop)
 							{
 								continue;
 							}
 							size1 += size2;
+							int size4 = size1;
 							int encsize = size1;
-							bool noninitial = false;
 							bool contribute = false;
 							int slicestr = 0;
+							ushort[]? prevblk = null;
 						encloop:
-							int newtokens = Transformer.Tokenize(dict, noninitial ? encbuffer2 : encbuffer2[size1..], text.AsSpan(slicestr), maxlen, totalMagicTokens, out int slicestr1);
+							int newtokens = Transformer.Tokenize(dict, encbuffer2[size4..], text.AsSpan(slicestr), maxlen, totalMagicTokens, out int slicestr1);
 							slicestr += slicestr1;
 							size1 += newtokens;
 
-							int modsize = size1 % maxContextSize;
-							if (modsize == 0 & newtokens > 0)
+							int modsize = (prevblk is null ? size1 : (size1 + 1)) % maxContextSize;
+							if (modsize == 0)
 							{
-								stackbuilder.Push(encbuffer2.ToArray());
-								noninitial = true;
-								contribute = true;
-								goto encloop;
-							}
-
-
-							if (modsize > 0)
-							{
-								encbuffer2[modsize++] = 1; //GPT-to-user context switch
+								if (newtokens > 0)
+								{
+									prevblk = encbuffer2.ToArray();
+									stackbuilder.Push(prevblk);
+									contribute = true;
+									size4 = 1;
+									encbuffer2[0] = encbuffer2[maxContextSize - 1];
+									goto encloop;
+								}
 							}
 							else
 							{
-								encbuffer2[maxContextSize - 1] = 1; //GPT-to-user context switch
-							}
-							if (newtokens > 0)
-							{
-								contribute = true;
-								stackbuilder.Push(encbuffer2[..(modsize)].ToArray());
+								encbuffer2[modsize++] = 1; //GPT-to-user context switch
+
+								if (newtokens > 0)
+								{
+									contribute = true;
+									stackbuilder.Push(encbuffer2[..(modsize)].ToArray());
+								}
+								else if (prevblk is { })
+								{
+									prevblk[maxContextSize - 1] = 1; //[END_GPT]
+								}
 							}
 							DecoderBlocksLinkedList? decoderBlocks = null;
 #pragma warning disable CS8600 // Converting null literal or possible null value to non-nullable type.
@@ -338,7 +355,7 @@ namespace TinyGPT.DecoderV1.Trainer
 							if (decoderBlocks is { } && contribute)
 							{
 								alldata.Add((encsize, decoderBlocks));
-								if (noninitial)
+								if (prevblk is null)
 								{
 									safedata.Add((encsize, decoderBlocks));
 								}
@@ -438,39 +455,48 @@ namespace TinyGPT.DecoderV1.Trainer
 					{
 						barrier1.SignalAndWait();
 						bool safepoint1 = safepoint;
-						if (decoderBlocksLinkedList is null){
+						if (decoderBlocksLinkedList is null)
+						{
 							(slice, decoderBlocksLinkedList) = safepoint1 ? safetokenized[mode ? RandomNumberGenerator.GetInt32(wqlen3, safedatasize) : RandomNumberGenerator.GetInt32(0, wqlen3)] : tokenized[mode ? RandomNumberGenerator.GetInt32(wqlen2, alldatasize) : RandomNumberGenerator.GetInt32(0, wqlen2)];
-							if(decoderBlocksLinkedList is null){
+							if (decoderBlocksLinkedList is null)
+							{
 								throw new Exception("Unexpected null linked list root (should not reach here)");
 							}
 							state.Clear();
 						}
 						ushort[] example = decoderBlocksLinkedList.data;
-						Transformer.Mask(example, masked, 8, 3, state);
+						int lenm1 = example.Length - 1;
+						Transformer.Mask(example[..lenm1], masked, 8, 3, state);
 
 						expectedValues[z2] = example;
 
 
 						using (NewDisposeScope())
 						{
-							Tensor memory1 = notchatgpt.Encode(masked[..(example.Length - 1)], memory);
 
-							using(memory){
-								actualTensors[z2] = notchatgpt.Decode(memory1, slice, memory).MoveToOuterDisposeScope();
-							}
-							decoderBlocksLinkedList = decoderBlocksLinkedList.next;
-							if(decoderBlocksLinkedList is null){
-								memory = null;
+							using (Tensor? memory2 = memory)
+							{
+								using Tensor memory1 = notchatgpt.Encode(masked[..(lenm1)], memory2);
 
-								//Cast vote saying that the optimizer can be safely ran
-								if(safepoint1){
-									Interlocked.Increment(ref safevotes);
+								actualTensors[z2] = notchatgpt.Decode(memory1, slice, memory2).MoveToOuterDisposeScope();
+								decoderBlocksLinkedList = decoderBlocksLinkedList.next;
+								if (decoderBlocksLinkedList is null)
+								{
+									memory = null;
+									//Cast vote saying that the optimizer can be safely ran
+									if (safepoint1)
+									{
+										Interlocked.Increment(ref safevotes);
+									}
 								}
-							} else{
-								memory1.detach();
-								memory = memory1.MoveToOuterDisposeScope();
+								else
+								{
+									memory = memory1.detach().MoveToOuterDisposeScope();
+								}
 							}
-							
+
+
+
 						}
 						expslices[z2] = slice;
 						slice = 0;
@@ -493,12 +519,13 @@ namespace TinyGPT.DecoderV1.Trainer
 				using var d2 = NewDisposeScope();
 				bool safepoint1 = safecounter > optimizerUpdateInterval;
 				safepoint = safepoint1;
-				if(++safecounter == 1){
+				if (++safecounter == 1)
+				{
 					adam.zero_grad();
 				}
 
 				Tensor loss;
-				
+
 				barrier1.SignalAndWait();
 				barrier2.SignalAndWait();
 
@@ -555,16 +582,17 @@ namespace TinyGPT.DecoderV1.Trainer
 				double totalloss2 = loss.ToDouble();
 				Console.WriteLine("Batch loss: " + totalloss2);
 				adaptiveLearningRate = (adaptiveLearningRate * 0.999) + (Math.Min(totalloss2, 10) * 1e-8);
-				
-				if(safepoint1)
+
+				if (safepoint1)
 				{
 					int safevotes1 = safevotes;
 					Console.WriteLine("Safepoint votes: " + safevotes1);
 
 					//policy can only be updated at safepoints!!!
 					//(because of the TinyGPT-XL recurrent transformer layers)
-					if (safevotes1 == trainingMicroBatchSize){
-						
+					if (safevotes1 == trainingMicroBatchSize)
+					{
+
 						Console.WriteLine("scaling gradients...");
 						foreach (Tensor tensor in notchatgpt.parameters())
 						{

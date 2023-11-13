@@ -146,7 +146,7 @@ namespace TinyGPT.Core
 			{
 				throw new IndexOutOfRangeException(nameof(outputs));
 			}
-			int randsegment = Math.Max(len - 1, 1024);
+			int randsegment = Math.Min(len, 1024);
 
 			Span<byte> actions = stackalloc byte[randsegment];
 
@@ -156,7 +156,7 @@ namespace TinyGPT.Core
 			}
 			for (int i = 0; i < len; ++i)
 			{
-				int imod = (i + randsegment - 1) % randsegment;
+				int imod = i % 1024;
 				if (imod == 0)
 				{
 					int remains = len - i;

@@ -54,9 +54,9 @@ namespace TinyGPT.Chatbot
 				case "nano-v1":
 					{
 						const int latentTokenSize = 512;
-						maxcontext = 2048;
+						maxcontext = 512;
 						const int attentionHeads = 8;
-						const int firstTierAttentionDepth = 4;
+						const int firstTierAttentionDepth = 5;
 						magicTokenClasses = 4;
 						tokenclasses += magicTokenClasses + 1;
 						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, 1e-7);
@@ -69,6 +69,9 @@ namespace TinyGPT.Chatbot
 			}
 			themodel.to(ScalarType.BFloat16);
 			themodel.load(datadir + model + ".model");
+			foreach(Parameter parameter in themodel.parameters()){
+				parameter.requires_grad = false;
+			}
 			themodel.eval();
 			if (usecuda)
 			{
@@ -87,6 +90,8 @@ namespace TinyGPT.Chatbot
 
 			Span<ushort> buffer = stackalloc ushort[maxcontext];
 			int maxinsize = maxcontext - 2;
+
+
 			Console.WriteLine("Ready!");
 			while (true)
 			{
@@ -97,35 +102,44 @@ namespace TinyGPT.Chatbot
 					continue;
 				}
 				Console.Write("TinyGPT: ");
-				int intokens = Transformer.Tokenize(dict, buffer, input, maxtokensize, magicTokenClasses);
+				int intokens = Transformer.Tokenize(dict, buffer, input, maxtokensize, magicTokenClasses, out _);
 				if (intokens > maxinsize)
 				{
 					Console.WriteLine("too big!");
 					continue;
 				}
 				buffer[intokens] = 0; //[STARTGPT]
-				int prev = 1;
-				for (int i = intokens + 1; i < maxcontext; ++i)
+				int[] lastRepeat = new int[tokenclasses];
+				Tensor? memory = null;
+				for (int i = intokens + 1, i2 = 0; true; ++i, ++i2)
 				{
 					double best = double.NegativeInfinity;
 					int bestindex = 1;
 					Tensor tensor;
 					using (var ds = NewDisposeScope())
 					{
-						tensor = themodel.Forward(buffer.Slice(0, i)).cpu();
+						Tensor? tmpmem = themodel.Encode(buffer.Slice(0, i), memory);
+						tensor = themodel.Decode(tmpmem, i - 1, memory).squeeze(0).softmax(0).cpu();
+						if (i == maxcontext){
+							memory?.Dispose();
+							memory = tmpmem;
+							i = 0;
+						}
+						
+
 						tensor.MoveToOuterDisposeScope();
 					}
 					using (tensor)
 					{
 						for (int z = 0; z < tokenclasses; ++z)
 						{
+							int prep = lastRepeat[z];
 							double my = tensor[z].ToScalar().ToDouble();
+							if(prep > 0){
+								my -= my * Math.Exp(0.01*(prep - i2));
+							}
 							if (my > best)
 							{
-								if (z == prev)
-								{
-									//continue;
-								}
 								best = my;
 								bestindex = z;
 							}
@@ -136,8 +150,8 @@ namespace TinyGPT.Chatbot
 					{
 						break;
 					}
+					lastRepeat[bestindex] = i2;
 					buffer[i] = (ushort)bestindex;
-					prev = bestindex;
 					string? str = decode[bestindex];
 
 					if (str is null)
