@@ -56,7 +56,7 @@ namespace TinyGPT.Chatbot
 						const int latentTokenSize = 512;
 						maxcontext = 512;
 						const int attentionHeads = 8;
-						const int firstTierAttentionDepth = 5;
+						const int firstTierAttentionDepth = 8;
 						magicTokenClasses = 4;
 						tokenclasses += magicTokenClasses + 1;
 						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, 1e-7);

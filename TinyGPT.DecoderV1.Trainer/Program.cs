@@ -15,6 +15,7 @@ using TorchSharp;
 using TorchSharp.Modules;
 using static System.Net.Mime.MediaTypeNames;
 using static TorchSharp.torch;
+using static TorchSharp.torch.distributions.constraints;
 using static TorchSharp.torch.optim;
 using static TorchSharp.torch.optim.lr_scheduler;
 using Transformer = TinyGPT.Core.Transformer;
@@ -41,9 +42,10 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int trainingBatches = 500000;
 		private const int trainingMicroBatchSize = 16;
 		private const int attentionHeads = 8;
-		private const int firstTierAttentionDepth = 5;
+		private const int firstTierAttentionDepth = 16;
 		private const int totalMagicTokens = 4;
 		private const int optimizerUpdateInterval = 4;
+		private const int targetTokensPerBatch = 2048;
 
 		[JsonObject(MemberSerialization.Fields)]
 		private sealed class WikipediaArticle
@@ -95,8 +97,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			Console.WriteLine("Loading simple english wikipedia dataset...");
 
-			ConcurrentBag<(int start, DecoderBlocksLinkedList list)>? alldata = new();
-			ConcurrentBag<(int start, DecoderBlocksLinkedList list)>? safedata = new();
+			ConcurrentQueue<(int start, DecoderBlocksLinkedList list)>? alldata = new();
 			string[]? wikiarticles = File.ReadAllLines(datadir + "simplewiki-latest.jsonl");
 			int wikilen = wikiarticles.Length;
 			int wqlength = questionanswering.Length;
@@ -113,7 +114,6 @@ namespace TinyGPT.DecoderV1.Trainer
 			string wikiprogresstail = new StringBuilder("/").Append(wikilen).Append(" simple english wikipedia articles").ToString();
 			Barrier? barrier3 = new Barrier(threads);
 			int seperatorLen = 0;
-			int safeSeperatorLen = 0;
 			for (int z = 0; z < threads; ++z)
 			{
 				int az = z;
@@ -122,6 +122,7 @@ namespace TinyGPT.DecoderV1.Trainer
 					StringBuilder sb = new StringBuilder("Tokenized ");
 					Span<ushort> encbuffer2 = stackalloc ushort[maxContextSize];
 					int stopsize = wqlength;
+					//int stopsize = 256;
 					Stack<ushort[]> stackbuilder = new Stack<ushort[]>();
 					while (true)
 					{
@@ -155,9 +156,9 @@ namespace TinyGPT.DecoderV1.Trainer
 					encloop:
 						int newtokens = Transformer.Tokenize(dict, encbuffer2[size4..], ostr.AsSpan(slicestr), maxlen, totalMagicTokens, out int slicestr1);
 						slicestr += slicestr1;
-						size1 += newtokens;
+						size4 += newtokens;
 
-						int modsize = (prevblk is null ? size1 : (size1 + 1)) % maxContextSize;
+						int modsize = size4 % maxContextSize;
 						if (modsize == 0)
 						{
 							if (newtokens > 0)
@@ -193,6 +194,7 @@ namespace TinyGPT.DecoderV1.Trainer
 							if (array.Length == 1)
 							{
 								Console.WriteLine("WARNING: array of length 1 found");
+								stackbuilder.Clear();
 								break;
 							}
 							decoderBlocks = new DecoderBlocksLinkedList(decoderBlocks, array);
@@ -200,11 +202,7 @@ namespace TinyGPT.DecoderV1.Trainer
 #pragma warning restore CS8600 // Converting null literal or possible null value to non-nullable type.
 						if (decoderBlocks is { } && contribute)
 						{
-							alldata.Add((encsize, decoderBlocks));
-							if (prevblk is null)
-							{
-								safedata.Add((encsize, decoderBlocks));
-							}
+							alldata.Enqueue((encsize, decoderBlocks));
 						}
 						else
 						{
@@ -223,7 +221,6 @@ namespace TinyGPT.DecoderV1.Trainer
 					if (az == 0)
 					{
 						seperatorLen = alldata.Count;
-						safeSeperatorLen = safedata.Count;
 					}
 					barrier3.SignalAndWait();
 					if (az == 0)
@@ -311,9 +308,9 @@ namespace TinyGPT.DecoderV1.Trainer
 						encloop:
 							int newtokens = Transformer.Tokenize(dict, encbuffer2[size4..], text.AsSpan(slicestr), maxlen, totalMagicTokens, out int slicestr1);
 							slicestr += slicestr1;
-							size1 += newtokens;
+							size4 += newtokens;
 
-							int modsize = (prevblk is null ? size1 : (size1 + 1)) % maxContextSize;
+							int modsize = size4 % maxContextSize;
 							if (modsize == 0)
 							{
 								if (newtokens > 0)
@@ -347,6 +344,7 @@ namespace TinyGPT.DecoderV1.Trainer
 								if (array.Length == 1)
 								{
 									Console.WriteLine("WARNING: array of length 1 found");
+									stackbuilder.Clear();
 									break;
 								}
 								decoderBlocks = new DecoderBlocksLinkedList(decoderBlocks, array);
@@ -354,11 +352,7 @@ namespace TinyGPT.DecoderV1.Trainer
 #pragma warning restore CS8600 // Converting null literal or possible null value to non-nullable type.
 							if (decoderBlocks is { } && contribute)
 							{
-								alldata.Add((encsize, decoderBlocks));
-								if (prevblk is null)
-								{
-									safedata.Add((encsize, decoderBlocks));
-								}
+								alldata.Enqueue((encsize, decoderBlocks));
 							}
 							else
 							{
@@ -383,8 +377,11 @@ namespace TinyGPT.DecoderV1.Trainer
 				thrlist[z] = thread;
 				thread.Start();
 			}
-
-
+			int[][] sizeclasses = new int[maxContextSize][];
+			for (int i = 1; i < maxContextSize; ++i)
+			{
+				sizeclasses[i - 1] = new int[i];
+			}
 
 
 			Console.WriteLine("Initializing model...");
@@ -394,7 +391,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			Adam adam = new Adam(notchatgpt.parameters(), lr: 1e-5, eps: 1e-8);
 			//LRScheduler learningRateScheduler = ExponentialLR(adam, 0.9999, 0, true);
 
-			NLLLoss crossEntropyLoss = new NLLLoss(reduction: nn.Reduction.Mean);
+			NLLLoss nlloss = new NLLLoss(reduction: nn.Reduction.Sum);
 
 			adam.to(CUDA);
 
@@ -404,13 +401,6 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 
-			Barrier barrier1 = new Barrier(trainingMicroBatchSize + 1);
-			Barrier barrier2 = new Barrier(trainingMicroBatchSize + 1);
-			Tensor[] actualTensors = new Tensor[trainingMicroBatchSize];
-			int[] expslices = new int[trainingMicroBatchSize];
-			ushort[][] expectedValues = new ushort[trainingMicroBatchSize][];
-
-			double bestloss = double.PositiveInfinity;
 			Queue<string> savequeue = new Queue<string>();
 			long[] shape1 = new long[] { 1, -1 };
 
@@ -425,207 +415,154 @@ namespace TinyGPT.DecoderV1.Trainer
 			wikiarticles = null;
 			wqlen2 = seperatorLen;
 			(int size, DecoderBlocksLinkedList decoderBlocksLinkedList)[] tokenized = alldata.ToArray();
-			int wqlen3 = safeSeperatorLen;
-			(int size, DecoderBlocksLinkedList decoderBlocksLinkedList)[] safetokenized = safedata.ToArray();
 
 			int alldatasize = tokenized.Length;
-			int safedatasize = safetokenized.Length;
+			int wikidatasize = alldatasize - wqlen2;
+
 			alldata = null;
-			safedata = null;
 
 			GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
 			GC.WaitForPendingFinalizers();
-			Console.WriteLine("Start multithreaded forward workers...");
-			bool safepoint = false; //Safepoint tells batches to stop at a short data 
-			int safevotes = 0;
 
-			for (int i = 0; i < trainingMicroBatchSize; ++i)
+			Span<ushort> masked = stackalloc ushort[maxContextSize];
+
+
+			Console.WriteLine("Start training...");
+			double adaptiveLearningRate = 1e-5;
+			for (int z = 0, savecooldown = 0; z < trainingBatches; ++z)
 			{
-				int z = i;
+				Console.WriteLine("Forward pass batch #" + z);
+				using var d2 = NewDisposeScope();
+				int totalTokensGenerated = 0;
+				double totalLosses = 0;
+				while (true)
+				{
 
-				Thread thread = new Thread(() => {
-					Span<ushort> masked = stackalloc ushort[maxContextSize];
-					int z2 = z;
-					bool mode = (z2 & 1) == 1;
+
 					DecoderBlocksLinkedList? decoderBlocksLinkedList = null;
 					Tensor? memory = null;
 					Dictionary<ushort, bool> state = new Dictionary<ushort, bool>();
 					int slice = 0;
-					while (true)
+
+
+					if (decoderBlocksLinkedList is null)
 					{
-						barrier1.SignalAndWait();
-						bool safepoint1 = safepoint;
+						if (totalTokensGenerated > targetTokensPerBatch)
+						{
+							break;
+						}
+						//FAST non-branching mode selector
+						int mode = RandomNumberGenerator.GetInt32(0, 2);
+						(slice, decoderBlocksLinkedList) = tokenized[RandomNumberGenerator.GetInt32(wqlen2 * mode, wqlen2 + (wikidatasize * mode))];
 						if (decoderBlocksLinkedList is null)
 						{
-							(slice, decoderBlocksLinkedList) = safepoint1 ? safetokenized[mode ? RandomNumberGenerator.GetInt32(wqlen3, safedatasize) : RandomNumberGenerator.GetInt32(0, wqlen3)] : tokenized[mode ? RandomNumberGenerator.GetInt32(wqlen2, alldatasize) : RandomNumberGenerator.GetInt32(0, wqlen2)];
-							if (decoderBlocksLinkedList is null)
-							{
-								throw new Exception("Unexpected null linked list root (should not reach here)");
-							}
-							state.Clear();
+							throw new Exception("Unexpected null linked list root (should not reach here)");
 						}
-						ushort[] example = decoderBlocksLinkedList.data;
-						int lenm1 = example.Length - 1;
-						Transformer.Mask(example[..lenm1], masked, 8, 3, state);
-
-						expectedValues[z2] = example;
-
-
-						using (NewDisposeScope())
-						{
-
-							using (Tensor? memory2 = memory)
-							{
-								using Tensor memory1 = notchatgpt.Encode(masked[..(lenm1)], memory2);
-
-								actualTensors[z2] = notchatgpt.Decode(memory1, slice, memory2).MoveToOuterDisposeScope();
-								decoderBlocksLinkedList = decoderBlocksLinkedList.next;
-								if (decoderBlocksLinkedList is null)
-								{
-									memory = null;
-									//Cast vote saying that the optimizer can be safely ran
-									if (safepoint1)
-									{
-										Interlocked.Increment(ref safevotes);
-									}
-								}
-								else
-								{
-									memory = memory1.detach().MoveToOuterDisposeScope();
-								}
-							}
-
-
-
-						}
-						expslices[z2] = slice;
-						slice = 0;
-						barrier2.SignalAndWait();
+						state.Clear();
 					}
-				});
-				thread.IsBackground = true;
-				thread.Name = "Forward thread #" + i;
-				thread.Start();
-			}
+					ushort[] example = decoderBlocksLinkedList.data;
+					int lenm1 = example.Length - 1;
+
+					Transformer.Mask(example.AsSpan(0, lenm1), masked, 8, 3, state);
 
 
-
-
-			Console.WriteLine("Start training...");
-			double adaptiveLearningRate = 1e-4;
-			for (int z = 0, savecooldown = 0, safecounter = 0; z < trainingBatches; ++z)
-			{
-				Console.WriteLine("Forward pass batch #" + z);
-				using var d2 = NewDisposeScope();
-				bool safepoint1 = safecounter > optimizerUpdateInterval;
-				safepoint = safepoint1;
-				if (++safecounter == 1)
-				{
-					adam.zero_grad();
-				}
-
-				Tensor loss;
-
-				barrier1.SignalAndWait();
-				barrier2.SignalAndWait();
-
-				int totallen = 0;
-				for (int p = 0; p < trainingMicroBatchSize; ++p)
-				{
-					ushort[] arr = expectedValues[p];
-					totallen += arr.Length - (expslices[p] + 1);
-				}
-				int[] ec2 = new int[totallen];
-				for (int p = 0, pos = 0; p < trainingMicroBatchSize; ++p)
-				{
-					ushort[] arr = expectedValues[p];
-					int arrlen = arr.Length;
-
-					for (int pos2 = expslices[p] + 1; pos2 < arrlen;)
-					{
-						ec2[pos++] = arr[pos2++];
-					}
-
-				}
-				Console.WriteLine("Compute loss batch #" + z);
-				using (NewDisposeScope())
-				{
-					Tensor lsp;
-					using (Tensor cat2 = cat(actualTensors, 0))
-					{
-						using Tensor catfloat = cat2.to(ScalarType.Float64);
-
-						lsp = catfloat.log_softmax(1);
-
-					}
-					Tensor logits = tensor(ec2, ScalarType.Int64, CUDA);
-
-					loss = crossEntropyLoss.forward(lsp, logits);
-
-					Console.WriteLine("Backpropagate batch #" + z);
 					using (NewDisposeScope())
 					{
-						loss.backward();
-					}
 
-					for (int p = 0; p < trainingMicroBatchSize; ++p)
-					{
-						actualTensors[p].Dispose();
-					}
-					loss = loss.cpu().MoveToOuterDisposeScope();
-				}
-
-
-
-
-
-				double totalloss2 = loss.ToDouble();
-				Console.WriteLine("Batch loss: " + totalloss2);
-				adaptiveLearningRate = (adaptiveLearningRate * 0.999) + (Math.Min(totalloss2, 10) * 1e-8);
-
-				if (safepoint1)
-				{
-					int safevotes1 = safevotes;
-					Console.WriteLine("Safepoint votes: " + safevotes1);
-
-					//policy can only be updated at safepoints!!!
-					//(because of the TinyGPT-XL recurrent transformer layers)
-					if (safevotes1 == trainingMicroBatchSize)
-					{
-
-						Console.WriteLine("scaling gradients...");
-						foreach (Tensor tensor in notchatgpt.parameters())
+						using Tensor? memory2 = memory;
+						using Tensor memory1 = notchatgpt.Encode(masked[..(lenm1)], memory2);
+						lenm1 -= slice;
+						int[] convert = sizeclasses[lenm1 - 1];
+						for (int ci = 0; ci < lenm1;)
 						{
-							(tensor.grad() ?? throw new Exception("Unexpected null gradients (should not reach here)")).div_(safecounter);
+							ref int destination = ref convert[ci];
+							destination = example[++ci + slice];
 						}
-						safecounter = 0;
-						Console.WriteLine("setting adaptive learning rate to " + adaptiveLearningRate);
-						foreach (ILearningRateController learningRateController in adam.ParamGroups)
+						totalTokensGenerated += lenm1;
+						Tensor loss;
+						Tensor onehot1;
+						using (Tensor onehot = notchatgpt.Decode(memory1, slice, memory2))
 						{
-							learningRateController.LearningRate = adaptiveLearningRate;
+							onehot1 = onehot.to(ScalarType.Float64);
 						}
-
-
-						bool defeat = totalloss2 < bestloss;
-						if (++savecooldown == 64)
+						using (Tensor onehot = onehot1)
 						{
-							Console.WriteLine("Saving policy...");
-							string savename = save + z;
-							notchatgpt.save(savename);
-							savequeue.Enqueue(savename);
-							if (savequeue.Count > 5)
+							onehot1 = onehot.log_softmax(1);
+						}
+						using (Tensor logits = tensor(convert, ScalarType.Int64, CUDA))
+						{
+							using (onehot1)
 							{
-								File.Delete(savequeue.Dequeue());
+								loss = nlloss.forward(onehot1, logits);
 							}
-							savecooldown = 0;
 						}
-						Console.WriteLine("Optimizer step");
+						Tensor cpuloss;
+						using (loss)
+						{
+							loss.backward();
+							cpuloss = loss.cpu();
+						}
+						using (cpuloss)
+						{
+							totalLosses += cpuloss.ToDouble();
+						}
 
-						//learningRateScheduler.step();
-						adam.step();
+
+
+						decoderBlocksLinkedList = decoderBlocksLinkedList.next;
+						if (decoderBlocksLinkedList is null)
+						{
+							memory = null;
+						}
+						else
+						{
+							memory = memory1.detach().MoveToOuterDisposeScope();
+						}
+
+
 					}
-					safevotes = 0;
+
+					slice = 0;
 				}
+
+
+
+				totalLosses /= totalTokensGenerated;
+
+				Console.WriteLine("Average loss per token: " + totalLosses);
+
+
+
+				adaptiveLearningRate = (adaptiveLearningRate * 0.99) + (Math.Min(totalLosses, 10) * 1e-7);
+
+				Console.WriteLine("scaling gradients...");
+				foreach (Tensor tensor in notchatgpt.parameters())
+				{
+					(tensor.grad() ?? throw new Exception("Unexpected null gradients (should not reach here)")).div_(totalTokensGenerated);
+				}
+				Console.WriteLine("setting adaptive learning rate to " + adaptiveLearningRate);
+				foreach (ILearningRateController learningRateController in adam.ParamGroups)
+				{
+					learningRateController.LearningRate = adaptiveLearningRate;
+				}
+
+
+				if (++savecooldown == 256)
+				{
+					Console.WriteLine("Saving policy...");
+					string savename = save + z;
+					notchatgpt.save(savename);
+					savequeue.Enqueue(savename);
+					if (savequeue.Count > 5)
+					{
+						File.Delete(savequeue.Dequeue());
+					}
+					savecooldown = 0;
+				}
+				Console.WriteLine("Optimizer step");
+
+				//learningRateScheduler.step();
+				adam.step();
 			}
 
 		}
