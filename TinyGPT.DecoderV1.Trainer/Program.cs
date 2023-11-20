@@ -26,7 +26,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		//hyperparameters
 		private const int latentTokenSize = 1024;
 		private const int maxContextSize = 1024;
-		private const int trainingBatches = 200000;
+		private const int trainingBatches = 100000;
 		private const int targetTokensPerHugeBatch = 65536;
 		private const int targetTokensPerSmallBatch = 4096;
 		private const int attentionHeads = 12;
@@ -297,7 +297,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			Console.WriteLine("Initializing model...");
 			InitializeDeviceType(DeviceType.CUDA);
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, 512, 512, 1e-7);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, 512, 512, 1, 1536, 1e-7);
 			notchatgpt.to(CUDA, ScalarType.BFloat16);
 			Adam adam = new Adam(notchatgpt.parameters(), lr: 1e-4, eps: 1e-7);
 			//LRScheduler learningRateScheduler = ExponentialLR(adam, 0.9999, 0, true);

@@ -53,7 +53,7 @@ namespace TinyGPT.Core
 		private readonly Parameter positionalEncodingWeight;
 		private readonly int headcount;
 		//private readonly LayerNorm layerNorm;
-		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int tokenClasses, int coreDepth, double initialFrequency, int attentionKeySize, int attentionValueSize, double epsilon) : base(name)
+		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int tokenClasses, int coreDepth, double initialFrequency, int attentionKeySize, int attentionValueSize, int causalConvLookback, int computecoresize, double epsilon) : base(name)
 		{
 			if (attentionHeadsCount < 1)
 			{
@@ -66,7 +66,7 @@ namespace TinyGPT.Core
 			for (int i = 0; i < coreDepth; ++i)
 			{
 				layers.Add(new MultiheadResidualAttention("", latentTokenSize, attentionKeySize, attentionValueSize, latentTokenSize, attentionHeadsCount, epsilon));
-				layers.Add(new ResidualGatedComputeLayer("", latentTokenSize, epsilon));
+				layers.Add(new ResidualGatedCausalConv("", latentTokenSize, causalConvLookback, computecoresize, epsilon));
 			}
 
 

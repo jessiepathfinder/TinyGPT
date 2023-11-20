@@ -48,35 +48,50 @@ namespace TinyGPT.Core
 			return y.MoveToOuterDisposeScope();
 		}
 	}
-	public interface IL1Regularizable{
+	public interface IL1Regularizable
+	{
 		public void L1Regularize(double lambda);
 	}
-	public sealed class ResidualGatedComputeLayer : Module<Tensor, Tensor>, IL1Regularizable
+	public sealed class ResidualGatedCausalConv : Module<Tensor, Tensor>, IL1Regularizable
 	{
-		private readonly Linear input;
+		private readonly Conv1d input;
 		private readonly Linear output;
 		private readonly Linear gate;
+		private readonly ConstantPad1d constantPad1d;
 		private readonly LayerNorm layerNorm;
 		private static readonly Scalar one = 1;
-		public ResidualGatedComputeLayer(string name, int size, double epsilon) : base(name)
+		public ResidualGatedCausalConv(string name, int size, int lookback, int coresize, double epsilon) : base(name)
 		{
+			constantPad1d = ConstantPad1d((lookback, 0), 0);
 			layerNorm = LayerNorm(size, epsilon, false);
-			input = Misc.CreateXavierInitializedLinear(size, size, true);
-			gate = Misc.CreateXavierInitializedLinear(size, size, true);
+			input = Conv1d(size, coresize, lookback + 1);
 
-			output = Misc.CreateXavierInitializedLinear(size, size, false);
+			gate = Misc.CreateXavierInitializedLinear(coresize, size, true);
+
+			output = Misc.CreateXavierInitializedLinear(coresize, size, false);
 		}
 
 		public override Tensor forward(Tensor input1)
 		{
-			using(NewDisposeScope()){
+			using (NewDisposeScope())
+			{
 				Tensor core;
-				using(Tensor x = input.forward(input1)){
-					core = x.gelu();
+				using (Tensor x = input1.transpose(1, 0))
+				{
+					core = constantPad1d.forward(x);
+				}
+				using (Tensor x = core)
+				{
+					core = input.forward(x);
+				}
+				using (Tensor x = core)
+				{
+					core = x.transpose(1, 0);
 				}
 				Tensor y;
 
-				using(Tensor x = gate.forward(input1)){
+				using (Tensor x = gate.forward(core))
+				{
 					y = x.sigmoid();
 				}
 				Tensor computed;
@@ -86,9 +101,11 @@ namespace TinyGPT.Core
 				}
 
 				Tensor output3;
-				using (y){
+				using (y)
+				{
 					Tensor output2;
-					using(computed){
+					using (computed)
+					{
 						using Tensor flip = one - y;
 						output2 = computed.mul(flip);
 					}
@@ -120,7 +137,8 @@ namespace TinyGPT.Core
 		public void L1Regularize(double lambda)
 		{
 			Misc.L1RegularizeIMPL(exit.weight, lambda);
-			foreach(AttentionLayer attentionLayer in attentionLayers) {
+			foreach (AttentionLayer attentionLayer in attentionLayers)
+			{
 				attentionLayer.L1Regularize(lambda);
 			}
 		}
@@ -164,7 +182,8 @@ namespace TinyGPT.Core
 		private readonly ModuleList<AttentionLayer> attentionLayers = new ModuleList<AttentionLayer>();
 		public MultiheadResidualAttention(string name, int inputSize, int keySize, int valueSize, int outputSize, int heads, double epsilon) : base(name)
 		{
-			for(int i = 0; i < heads; ++i){
+			for (int i = 0; i < heads; ++i)
+			{
 				attentionLayers.Add(new AttentionLayer("", inputSize, keySize, valueSize));
 			}
 			exit = Misc.CreateXavierInitializedLinear(valueSize * heads, outputSize, false);
