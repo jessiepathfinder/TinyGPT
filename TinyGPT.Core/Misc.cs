@@ -18,13 +18,13 @@ namespace TinyGPT.Core
 			if(tensor is null) throw new ArgumentNullException(nameof(tensor));
 
 			//Xavier lambda scaling
-			lambda *= Math.Sqrt(6.0 / (tensor.size(0) + tensor.size(1)));
+			lambda *= 6.0 / Math.Sqrt((tensor.size(0) + tensor.size(1)));
 			
 			using(no_grad()){
 				Tensor grad = tensor.grad() ?? throw new Exception("No gradients to regularize");
 				using (NewDisposeScope()){
 					using Tensor sign = tensor.sign();
-					grad.add_(sign);
+					grad.add_(sign.mul_(lambda));
 				}
 			}
 			
