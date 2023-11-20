@@ -152,11 +152,11 @@ namespace TinyGPT.Core
 
 				using (Tensor x = y)
 				{
-					y = x.matmul(wordEmbedding);
+					y = x.mul(finalscale);
 				}
 				using (y)
 				{
-					return y.mul(finalscale).MoveToOuterDisposeScope();
+					return y.matmul(wordEmbedding).MoveToOuterDisposeScope();
 				}
 			}
 		}
