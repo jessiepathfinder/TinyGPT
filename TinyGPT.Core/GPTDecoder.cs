@@ -72,7 +72,7 @@ namespace TinyGPT.Core
 
 
 			wordEmbedding = randn(latentTokenSize, tokenClasses);
-			scale = Math.Sqrt(latentTokenSize * 3);
+			scale = Math.Sqrt(3.0 / latentTokenSize);
 			headcount = attentionHeadsCount;
 			//layerNorm = LayerNorm(tokenClasses, epsilon);
 			RegisterComponents();
@@ -158,7 +158,7 @@ namespace TinyGPT.Core
 				}
 				using (y)
 				{
-					return y.div(scale).MoveToOuterDisposeScope();
+					return y.mul(scale).MoveToOuterDisposeScope();
 				}
 			}
 		}
