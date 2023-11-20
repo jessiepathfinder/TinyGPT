@@ -45,10 +45,7 @@ namespace TinyGPT.Core
 
 		private readonly ModuleList<Module<Tensor, Tensor>> layers = new ModuleList<Module<Tensor, Tensor>>();
 		private readonly Parameter wordEmbedding;
-		//private readonly Parameter finalscale;
-
-
-		private readonly double scale;
+		private readonly Parameter finalscale;
 
 
 
@@ -64,7 +61,7 @@ namespace TinyGPT.Core
 			}
 			positionalEncodingWeight = Parameter(randn(latentTokenSize, 1).mul_(initialFrequency));
 			positionalEncodingBias = Parameter(zeros(latentTokenSize, 1));
-			//finalscale = Parameter(ones(1, latentTokenSize));
+			finalscale = Parameter(full(1, latentTokenSize, (Scalar)(1.0 / Math.Sqrt(latentTokenSize))));
 
 			for (int i = 0; i < coreDepth; ++i)
 			{
@@ -74,7 +71,6 @@ namespace TinyGPT.Core
 
 
 			wordEmbedding = Parameter(randn(latentTokenSize, tokenClasses));
-			scale = Math.Sqrt(3.0 / latentTokenSize);
 			headcount = attentionHeadsCount;
 			//layerNorm = LayerNorm(tokenClasses, epsilon);
 			RegisterComponents();
@@ -160,7 +156,7 @@ namespace TinyGPT.Core
 				}
 				using (y)
 				{
-					return y.mul(scale).MoveToOuterDisposeScope();
+					return y.mul(finalscale).MoveToOuterDisposeScope();
 				}
 			}
 		}
