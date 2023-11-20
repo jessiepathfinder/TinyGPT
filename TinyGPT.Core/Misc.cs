@@ -13,6 +13,22 @@ namespace TinyGPT.Core
 {
 	public static class Misc
 	{
+		public static void L1RegularizeIMPL(Tensor? tensor, double lambda){
+
+			if(tensor is null) throw new ArgumentNullException(nameof(tensor));
+
+			//Xavier lambda scaling
+			lambda *= Math.Sqrt(6.0 / (tensor.size(0) + tensor.size(1)));
+			
+			using(no_grad()){
+				Tensor grad = tensor.grad() ?? throw new Exception("No gradients to regularize");
+				using (NewDisposeScope()){
+					using Tensor sign = tensor.sign();
+					grad.add_(sign);
+				}
+			}
+			
+		}
 		public static Linear CreateXavierInitializedLinear(int inputs, int outputs, bool bias){
 			Linear linear = Linear(inputs, outputs, bias);
 			init.xavier_normal_(linear.weight ?? throw new Exception("No weight found (should not reach here)"));

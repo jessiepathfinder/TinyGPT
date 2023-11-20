@@ -59,7 +59,7 @@ namespace TinyGPT.Core
 	{
 
 
-		public static int Tokenize(IReadOnlyDictionary<string, ushort> dict, Span<ushort> output, ReadOnlySpan<char> str, int maxtokensize, int specialTokenClasses, out int ctr)
+		public static int Tokenize(IReadOnlyDictionary<string, ushort> dict, Span<ushort> output, ReadOnlySpan<char> str, int maxtokensize, int specialTokenClasses)
 		{
 			if (maxtokensize < 1)
 			{
@@ -85,7 +85,6 @@ namespace TinyGPT.Core
 					output[pos++] = (ushort)(token + specialTokenClasses);
 				}
 			}
-			ctr = ctr2;
 			return pos;
 		}
 		public static Tensor CreateSemiCausalAttentionMask(int size, int startCausal, ScalarType scalarType, Device? device)
