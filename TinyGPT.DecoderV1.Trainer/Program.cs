@@ -159,7 +159,7 @@ namespace TinyGPT.DecoderV1.Trainer
 						int[] convert = sizeclasses[size1 - encsize2];
 						for (int i = encsize2; i < size1; ++i)
 						{
-							convert[i - encsize2] = encbuffer[i];
+							convert[i - encsize2] = encbuffer2[i];
 						}
 
 						
@@ -271,7 +271,7 @@ namespace TinyGPT.DecoderV1.Trainer
 							int[] convert = sizeclasses[size1 - encsize2];
 							for (int i = encsize2; i < size1; ++i)
 							{
-								convert[i - encsize2] = encbuffer[i];
+								convert[i - encsize2] = encbuffer2[i];
 							}
 							
 
