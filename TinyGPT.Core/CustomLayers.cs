@@ -84,6 +84,8 @@ namespace TinyGPT.Core
 				{
 					computed = output.forward(core);
 				}
+
+				Tensor output3;
 				using (y){
 					Tensor output2;
 					using(computed){
@@ -91,18 +93,17 @@ namespace TinyGPT.Core
 						output2 = computed.mul(flip);
 					}
 
-					Tensor output3;
-					using (Tensor residual = input1.mul(y)){
-						using (output2)
-						{
-							output3 = residual.add(output2);
-						}
-					}
-					using(output3){
-						return layerNorm.forward(output3).MoveToOuterDisposeScope();
+
+					using Tensor residual = input1.mul(y);
+					using (output2)
+					{
+						output3 = residual.add(output2);
 					}
 
-
+				}
+				using (output3)
+				{
+					return layerNorm.forward(output3).MoveToOuterDisposeScope();
 				}
 			}
 		}

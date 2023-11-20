@@ -273,11 +273,12 @@ namespace TinyGPT.DecoderV1.Trainer
 
 							alldata.Enqueue((tensor(convert, ScalarType.Int64, CUDA), encbuffer[..(size1 + 1)].ToArray()));
 
-							if ((a & 4095) == 4095)
-							{
-								Console.WriteLine(sb.Append(a).Append(wikiprogresstail).ToString());
-								sb.Remove(10, sb.Length - 10);
-							}
+							
+						}
+						if ((a & 4095) == 4095)
+						{
+							Console.WriteLine(sb.Append(a).Append(wikiprogresstail).ToString());
+							sb.Remove(10, sb.Length - 10);
 						}
 					}
 				});

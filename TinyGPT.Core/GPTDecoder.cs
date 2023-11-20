@@ -40,7 +40,7 @@ namespace TinyGPT.Core
 
 
 
-		
+
 
 
 		private readonly ModuleList<Module<Tensor, Tensor>> layers = new ModuleList<Module<Tensor, Tensor>>();
@@ -72,7 +72,7 @@ namespace TinyGPT.Core
 
 
 			wordEmbedding = randn(latentTokenSize, tokenClasses);
-			scale = Math.Sqrt(latentTokenSize * 2);
+			scale = Math.Sqrt(latentTokenSize * 3);
 			headcount = attentionHeadsCount;
 			//layerNorm = LayerNorm(tokenClasses, epsilon);
 			RegisterComponents();
@@ -92,10 +92,12 @@ namespace TinyGPT.Core
 
 				Tensor wordEmbedding = this.wordEmbedding;
 				Tensor positionalEncoding;
-				using(Tensor range = arange(0, len, wordEmbedding.dtype, wordEmbedding.device)){
+				using (Tensor range = arange(0, len, wordEmbedding.dtype, wordEmbedding.device))
+				{
 					positionalEncoding = range.mul(positionalEncodingWeight);
 				}
-				using(Tensor tempp = positionalEncoding){
+				using (Tensor tempp = positionalEncoding)
+				{
 					positionalEncoding = tempp.add(positionalEncodingBias);
 				}
 				using (Tensor tempp = positionalEncoding)
@@ -104,10 +106,11 @@ namespace TinyGPT.Core
 				}
 
 				Tensor[] all = new Tensor[len];
-				
+
 
 				Tensor y;
-				using(NewDisposeScope()){
+				using (NewDisposeScope())
+				{
 					for (int i = 0; i < len; ++i)
 					{
 						long my = input[i];
@@ -117,7 +120,8 @@ namespace TinyGPT.Core
 				}
 				using (Tensor c2 = y)
 				{
-					using(positionalEncoding){
+					using (positionalEncoding)
+					{
 						y = c2.add(positionalEncoding);
 					}
 				}
@@ -126,7 +130,8 @@ namespace TinyGPT.Core
 					y = c2.transpose(0, 1);
 				}
 
-				using (Tensor mask = Transformer.CreateCausalAttentionMask(len, len, wordEmbedding.dtype, wordEmbedding.device)){
+				using (Tensor mask = Transformer.CreateCausalAttentionMask(len, len, wordEmbedding.dtype, wordEmbedding.device))
+				{
 					foreach (Module<Tensor, Tensor> hiddenLayer in layers)
 					{
 						using Tensor x = y;
@@ -140,7 +145,7 @@ namespace TinyGPT.Core
 						}
 					}
 				}
-				
+
 
 				using (Tensor x = y)
 				{
@@ -169,8 +174,10 @@ namespace TinyGPT.Core
 
 		public void L1Regularize(double lambda)
 		{
-			foreach(Module<Tensor, Tensor> module in layers){
-				if(module is IL1Regularizable regularizable){
+			foreach (Module<Tensor, Tensor> module in layers)
+			{
+				if (module is IL1Regularizable regularizable)
+				{
 					regularizable.L1Regularize(lambda);
 				}
 			}
