@@ -257,6 +257,10 @@ namespace TinyGPT.DecoderV1.Trainer
 							}
 							int encsize2 = size1;
 							int ctd = Transformer.Tokenize(dict, encbuffer2[size1..], text.Replace("'''", null).Replace("''", null), maxlen, magicTokenClasses);
+							if (ctd == 0)
+							{
+								continue;
+							}
 							size1 += ctd;
 							if (size1 < maxContextSize)
 							{
