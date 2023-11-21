@@ -90,12 +90,14 @@ namespace TinyGPT.Core
 
 				Tensor wordEmbedding = this.wordEmbedding;
 				Tensor positionalEncoding = arange(0, len, wordEmbedding.dtype, wordEmbedding.device);
-				if(positionalEncoding.size(1) > len){
+				if (positionalEncoding.size(0) > len)
+				{
 					using Tensor tempp = positionalEncoding;
-					positionalEncoding = tempp.slice(1, 0, len, 1);
+					positionalEncoding = tempp.slice(0, 0, len, 1);
 				}
 
-				using(Tensor tempp = positionalEncoding){
+				using (Tensor tempp = positionalEncoding)
+				{
 					positionalEncoding = tempp.mul(positionalEncodingWeight);
 				}
 
