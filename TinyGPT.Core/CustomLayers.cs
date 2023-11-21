@@ -88,6 +88,10 @@ namespace TinyGPT.Core
 				{
 					core = x.transpose(1, 0);
 				}
+				using (Tensor x = core)
+				{
+					core = x.gelu();
+				}
 				Tensor y;
 
 				using (Tensor x = gate.forward(core))
