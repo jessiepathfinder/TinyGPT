@@ -88,27 +88,7 @@ namespace TinyGPT.Core
 
 				int headcount = this.headcount;
 
-				Tensor wordEmbedding = this.wordEmbedding;
-				Tensor positionalEncoding = arange(0, len, wordEmbedding.dtype, wordEmbedding.device);
-				if (positionalEncoding.size(0) > len)
-				{
-					using Tensor tempp = positionalEncoding;
-					positionalEncoding = tempp.slice(0, 0, len - 1, 1);
-				}
 
-				using (Tensor tempp = positionalEncoding)
-				{
-					positionalEncoding = tempp.mul(positionalEncodingWeight);
-				}
-
-				using (Tensor tempp = positionalEncoding)
-				{
-					positionalEncoding = tempp.add(positionalEncodingBias);
-				}
-				using (Tensor tempp = positionalEncoding)
-				{
-					positionalEncoding = tempp.sin();
-				}
 
 				Tensor[] all = new Tensor[len];
 
@@ -118,18 +98,25 @@ namespace TinyGPT.Core
 				{
 					for (int i = 0; i < len; ++i)
 					{
+						Tensor y2;
+						using(Tensor x2 = positionalEncodingWeight.mul(i)){
+							y2 = x2.add(positionalEncodingBias);
+						}
+						using(Tensor x2 = y2){
+							y2 = x2.sin();
+						}
+
 						long my = input[i];
-						all[i] = wordEmbedding.slice(1, my, my + 1, 1);
+						using Tensor slice2 = wordEmbedding.slice(1, my, my + 1, 1);
+						using (y2)
+						{
+							all[i] = slice2.add(y2);
+						}
+
 					}
 					y = cat(all, 1).MoveToOuterDisposeScope();
 				}
-				using (Tensor c2 = y)
-				{
-					using (positionalEncoding)
-					{
-						y = c2.add(positionalEncoding);
-					}
-				}
+
 				using (Tensor c2 = y)
 				{
 					y = c2.transpose(0, 1);
