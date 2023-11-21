@@ -93,7 +93,7 @@ namespace TinyGPT.Core
 				if (positionalEncoding.size(0) > len)
 				{
 					using Tensor tempp = positionalEncoding;
-					positionalEncoding = tempp.slice(0, 0, len, 1);
+					positionalEncoding = tempp.slice(0, 0, len - 1, 1);
 				}
 
 				using (Tensor tempp = positionalEncoding)
