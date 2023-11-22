@@ -66,7 +66,7 @@ namespace TinyGPT.Core
 			for (int i = 0; i < coreDepth; ++i)
 			{
 				layers.Add(new MultiheadResidualAttention("", latentTokenSize, attentionKeySize, attentionValueSize, latentTokenSize, attentionHeadsCount, epsilon));
-				layers.Add(new ResidualGatedComputeLayer("", latentTokenSize, computecoresize, epsilon));
+				layers.Add(new ResidualComputeLayer("", latentTokenSize, computecoresize, epsilon));
 			}
 
 
