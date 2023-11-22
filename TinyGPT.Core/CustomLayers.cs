@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Linq;
 using System.Reflection;
 using System.Text;
@@ -16,57 +17,35 @@ namespace TinyGPT.Core
 {
 	public static class CustomActivations
 	{
-		public static Tensor LeakySoftplus(Tensor input)
+		public static Tensor TanhELU(Tensor input)
 		{
-			using Tensor a = input / 16;
-			using Tensor b = softplus(input, 1, 20);
-			return a.add(b);
+			using(NewDisposeScope()){
+				Tensor y;
+				using(Tensor x = input.tanh()){
+					y = x.max(input);
+				}
+				using(y){
+					return y.add(1).MoveToOuterDisposeScope();
+				}
+			}
 		}
-		public static Tensor SwishDerivative(Tensor input)
-		{
-			using DisposeScope disposeScope = NewDisposeScope();
-			Tensor sigmoid = input.sigmoid();
-
-			Tensor y;
-			using (Tensor x = sigmoid.neg())
-			{
-				y = x.add(1);
-			}
-			using (Tensor x = y)
-			{
-				y = x.mul(input);
-			}
-			using (Tensor x = y)
-			{
-				y = x.mul(sigmoid);
-			}
-			using (Tensor x = y)
-			{
-				y = x.add(sigmoid);
-			}
-
-			return y.MoveToOuterDisposeScope();
-		}
+		
 	}
 	public interface IL1Regularizable
 	{
 		public void L1Regularize(double lambda);
 	}
-	public sealed class ResidualGatedCausalConv : Module<Tensor, Tensor>, IL1Regularizable
+	public sealed class ResidualComputeLayer : Module<Tensor, Tensor>, IL1Regularizable
 	{
-		private readonly Conv1d input;
+		private readonly Linear input;
 		private readonly Linear output;
-		private readonly Linear gate;
-		private readonly ConstantPad1d constantPad1d;
 		private readonly LayerNorm layerNorm;
-		private static readonly Scalar one = 1;
-		public ResidualGatedCausalConv(string name, int size, int lookback, int coresize, double epsilon) : base(name)
+		private readonly Parameter gate;
+		public ResidualComputeLayer(string name, int size, int coresize, double epsilon) : base(name)
 		{
-			constantPad1d = ConstantPad1d((lookback, 0), 0);
 			layerNorm = LayerNorm(size, epsilon, false);
-			input = Conv1d(size, coresize, lookback + 1);
-
-			gate = Misc.CreateXavierInitializedLinear(coresize, size, true);
+			input = Misc.CreateXavierInitializedLinear(size, coresize, true);
+			gate = Parameter(ones(1, size));
 
 			output = Misc.CreateXavierInitializedLinear(coresize, size, false);
 		}
@@ -75,56 +54,24 @@ namespace TinyGPT.Core
 		{
 			using (NewDisposeScope())
 			{
-				Tensor core;
-				using (Tensor x = input1.transpose(1, 0))
-				{
-					core = constantPad1d.forward(x);
-				}
-				using (Tensor x = core)
-				{
-					core = input.forward(x);
-				}
-				using (Tensor x = core)
-				{
-					core = x.transpose(1, 0);
-				}
-				using (Tensor x = core)
-				{
-					core = x.gelu();
-				}
 				Tensor y;
-
-				using (Tensor x = gate.forward(core))
+				using (Tensor x = input.forward(input1))
 				{
-					y = x.sigmoid();
-				}
-				Tensor computed;
-				using (core)
-				{
-					computed = output.forward(core);
+					y = CustomActivations.TanhELU(x);
 				}
 
-				Tensor output3;
+				using(Tensor x = y){
+					y = output.forward(x);
+				}
+				using (Tensor x = y)
+				{
+					using Tensor gated = input1.mul(gate);
+					y = x.add(gated);
+				}
+
 				using (y)
 				{
-					Tensor output2;
-					using (computed)
-					{
-						using Tensor flip = one - y;
-						output2 = computed.mul(flip);
-					}
-
-
-					using Tensor residual = input1.mul(y);
-					using (output2)
-					{
-						output3 = residual.add(output2);
-					}
-
-				}
-				using (output3)
-				{
-					return layerNorm.forward(output3).MoveToOuterDisposeScope();
+					return layerNorm.forward(y).MoveToOuterDisposeScope();
 				}
 			}
 		}
@@ -172,6 +119,10 @@ namespace TinyGPT.Core
 				{
 					x = exit.forward(y);
 				}
+				using (Tensor y = x){
+					using Tensor gated = input.mul(gate);
+					x = y.add(gated);
+				}
 				using (x)
 				{
 					return layerNorm.forward(x).MoveToOuterDisposeScope();
@@ -184,12 +135,14 @@ namespace TinyGPT.Core
 		private readonly Linear exit;
 		private readonly LayerNorm layerNorm;
 		private readonly ModuleList<AttentionLayer> attentionLayers = new ModuleList<AttentionLayer>();
+		private readonly Parameter gate;
 		public MultiheadResidualAttention(string name, int inputSize, int keySize, int valueSize, int outputSize, int heads, double epsilon) : base(name)
 		{
 			for (int i = 0; i < heads; ++i)
 			{
 				attentionLayers.Add(new AttentionLayer("", inputSize, keySize, valueSize));
 			}
+			gate = Parameter(ones(1, inputSize));
 			exit = Misc.CreateXavierInitializedLinear(valueSize * heads, outputSize, false);
 			layerNorm = LayerNorm(outputSize, epsilon, false);
 		}

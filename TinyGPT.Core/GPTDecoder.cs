@@ -53,20 +53,20 @@ namespace TinyGPT.Core
 		private readonly Parameter positionalEncodingWeight;
 		private readonly int headcount;
 		//private readonly LayerNorm layerNorm;
-		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int tokenClasses, int coreDepth, double initialFrequency, int attentionKeySize, int attentionValueSize, int causalConvLookback, int computecoresize, double epsilon) : base(name)
+		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int tokenClasses, int coreDepth, double initialFrequency, int attentionKeySize, int attentionValueSize, int computecoresize, double epsilon) : base(name)
 		{
 			if (attentionHeadsCount < 1)
 			{
 				throw new ArgumentNullException(nameof(attentionHeadsCount));
 			}
-			positionalEncodingWeight = Parameter(randn(latentTokenSize, 1).mul_(initialFrequency));
-			positionalEncodingBias = Parameter(zeros(latentTokenSize, 1));
+			positionalEncodingWeight = Parameter(randn(latentTokenSize).mul_(initialFrequency));
+			positionalEncodingBias = Parameter(zeros(latentTokenSize));
 			finalscale = Parameter(full(1, latentTokenSize, (Scalar)(1.0 / Math.Sqrt(latentTokenSize))));
 
 			for (int i = 0; i < coreDepth; ++i)
 			{
 				layers.Add(new MultiheadResidualAttention("", latentTokenSize, attentionKeySize, attentionValueSize, latentTokenSize, attentionHeadsCount, epsilon));
-				layers.Add(new ResidualGatedCausalConv("", latentTokenSize, causalConvLookback, computecoresize, epsilon));
+				layers.Add(new ResidualGatedComputeLayer("", latentTokenSize, computecoresize, epsilon));
 			}
 
 
@@ -91,6 +91,7 @@ namespace TinyGPT.Core
 
 
 				Tensor[] all = new Tensor[len];
+				Tensor wordEmbedding = this.wordEmbedding;
 
 
 				Tensor y;
@@ -105,22 +106,24 @@ namespace TinyGPT.Core
 						using(Tensor x2 = y2){
 							y2 = x2.sin();
 						}
-
-						long my = input[i];
-						using Tensor slice2 = wordEmbedding.slice(1, my, my + 1, 1);
-						using (y2)
+						Tensor slice2;
+						using (Tensor slice3 = wordEmbedding.select(1, input[i]))
 						{
-							all[i] = slice2.add(y2);
+							using(y2){
+								slice2 = slice3.add(y2);
+							}
+						}
+						
+						using (slice2)
+						{
+							all[i] = slice2.unsqueeze(0);
 						}
 
 					}
-					y = cat(all, 1).MoveToOuterDisposeScope();
+					y = cat(all, 0).MoveToOuterDisposeScope();
 				}
 
-				using (Tensor c2 = y)
-				{
-					y = c2.transpose(0, 1);
-				}
+
 
 				using (Tensor mask = Transformer.CreateCausalAttentionMask(len, len, wordEmbedding.dtype, wordEmbedding.device))
 				{
@@ -129,7 +132,7 @@ namespace TinyGPT.Core
 						using Tensor x = y;
 						if (hiddenLayer is MultiheadResidualAttention multiheadResidualAttention)
 						{
-							y = multiheadResidualAttention.Forward(y, y, mask);
+							y = multiheadResidualAttention.Forward(x, x, mask);
 						}
 						else
 						{

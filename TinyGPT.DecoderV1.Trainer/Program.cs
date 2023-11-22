@@ -297,7 +297,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			Console.WriteLine("Initializing model...");
 			InitializeDeviceType(DeviceType.CUDA);
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, 512, 512, 1, 1536, 1e-7);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, 512, 512, 2048, 1e-7);
 			notchatgpt.to(CUDA, ScalarType.BFloat16);
 			Adam adam = new Adam(notchatgpt.parameters(), lr: 1e-4, eps: 1e-7);
 			//LRScheduler learningRateScheduler = ExponentialLR(adam, 0.9999, 0, true);
