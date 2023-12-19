@@ -29,7 +29,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int targetUnlabeledTokensPerBatch = 16384;
 		private const int targetLabeledTokensPerBatch = 2048;
 		private const int attentionHeads = 8;
-		private const int firstTierAttentionDepth = 1;
+		private const int firstTierAttentionDepth = 2;
 		private const int magicTokenClasses = 4;
 		private const int minimumInputTokens = 5;
 
