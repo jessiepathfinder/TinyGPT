@@ -433,7 +433,7 @@ namespace TinyGPT.DecoderV1.Trainer
 						Tensor logits = tensor(cputarget, ScalarType.Int64, CUDA);
 
 						Tensor loss;
-						using (Tensor y = x, target = logits.slice(0, split, lenm1, 1))
+						using (Tensor y = x, target = logits.slice(0, split + 1, lenm1 + 1, 1))
 						{
 							loss = crossEntropyLoss.forward(y, target);
 						}

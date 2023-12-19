@@ -115,12 +115,17 @@ namespace TinyGPT.Chatbot
 				{
 					double best = double.NegativeInfinity;
 					int bestindex = 1;
-					using (Tensor tensor = themodel.Forward(buffer[..i]))
+					Tensor tensor;
+					using (Tensor x = themodel.Forward(buffer[..i]))
+					{
+						tensor = x.cpu();
+					}
+					using (tensor)
 					{
 						for (int z = 0; z < tokenclasses; ++z)
 						{
 							double my = tensor[z].ToScalar().ToDouble();
-							my -= my * Math.Exp((-0.01) * (i2 - lastRepeat[z]));
+							my += (0.1) * (i2 - lastRepeat[z]);
 							if (my > best)
 							{
 								best = my;
