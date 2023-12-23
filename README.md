@@ -1,4 +1,4 @@
-# TinyGPT-XL
+# TinyGPT
 
 ## A lightweight deep language model
 
