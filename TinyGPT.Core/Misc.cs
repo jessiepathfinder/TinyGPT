@@ -14,6 +14,44 @@ namespace TinyGPT.Core
 {
 	public static class Misc
 	{
+		private static readonly NLLLoss nlloss = new NLLLoss(reduction: Reduction.None);
+		public static Tensor FastCrossEntropyLoss(Tensor input, Tensor logits, bool square, bool average) {
+			using(NewDisposeScope()){
+				Tensor z;
+				using(Tensor y = input.exp()){
+					z = y.sum(-1, false);
+				}
+				using(Tensor y = z){
+					z = y.log();
+				}
+				Tensor x;
+				using(Tensor y = nlloss.forward(input, logits))
+				{
+					using(z){
+						x = z.add(y);
+					}
+				}
+				if(square){
+					using Tensor y = x;
+					x = y.mul(y);
+				}
+				if (average)
+				{
+					using Tensor y = x;
+					x = y.mean();
+				}
+				else
+				{
+					using Tensor y = x;
+					x = y.sum();
+				}
+				return x.MoveToOuterDisposeScope();
+
+
+			}
+		}
+		
+
 		public static void L2RegularizeIMPL(Tensor? tensor, double lambda)
 		{
 

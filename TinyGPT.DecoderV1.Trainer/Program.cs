@@ -28,10 +28,11 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int trainingBatches = 2000000;
 		private const int targetUnlabeledTokensPerBatch = 16384;
 		private const int targetLabeledTokensPerBatch = 2048;
-		private const int attentionHeads = 8;
+		private const int attentionHeads = 12;
 		private const int firstTierAttentionDepth = 1;
 		private const int magicTokenClasses = 4;
 		private const int minimumInputTokens = 5;
+		private const double regularizationTerm = 0.5;
 
 		[JsonObject(MemberSerialization.Fields)]
 		private sealed class WikipediaArticle
@@ -299,15 +300,14 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			Console.WriteLine("Initializing model...");
 			InitializeDeviceType(DeviceType.CUDA);
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, 512, 512, 4096, 8, 1e-6);
-			Linear currentTokenEngine = Misc.CreateXavierInitializedLinear(4096, latentTokenSize, false);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, latentTokenSize, latentTokenSize * attentionHeads, attentionHeads, 1e-6, latentTokenSize, 0);
+			Linear currentTokenEngine = Misc.CreateXavierInitializedLinear(latentTokenSize * attentionHeads, latentTokenSize, false);
 			notchatgpt.register_module("current_token_prediction_engine", currentTokenEngine);
 
 			notchatgpt.to(CUDA, ScalarType.BFloat16);
 			IEnumerable<Parameter> parameters = notchatgpt.parameters();
-			AMSGrad amsgrad = new AMSGrad(parameters, 0.9, 0.999, 1e-6);
+			AMSGrad amsgrad = new AMSGrad(parameters, 0.95, 0.999, 1e-6);
 			//LRScheduler learningRateScheduler = ExponentialLR(adam, 0.9999, 0, true);
-			NLLLoss crossEntropyLoss = new NLLLoss(reduction: nn.Reduction.Sum);
 
 
 
@@ -362,6 +362,7 @@ namespace TinyGPT.DecoderV1.Trainer
 				int totalTokensGenerated = 0;
 				int unlabeledTokensGenerated = 0;
 				int labeledTokensGenerated = 0;
+				int regularizationTokensGenerated = 0;
 
 				double totalLosses = 0;
 
@@ -384,18 +385,23 @@ namespace TinyGPT.DecoderV1.Trainer
 					//FAST non-branching mode selector
 					ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2 * mode, wqlen2 + (wikidatasize * mode))];
 
-					int lenm1 = example.Length - 1;
-					long[] cputarget = new long[lenm1];
-					for(int copy = 0; copy < lenm1; ){
-						ref long r = ref cputarget[copy];
-						r = example[++copy];
+					int lenm1 = example.Length;
+					int split = example[0] + 2;
+					long[] cputarget2 = new long[lenm1 - split];
+					for (int copy = split; copy < lenm1; ++copy){
+						cputarget2[copy - split] = example[copy];
 					}
-					lenm1 -= 1;
+					split -= 2;
+					lenm1 -= 2;
+					Transformer.Mask(example.AsSpan(1, lenm1), masked, 16, 3, new Dictionary<ushort, bool>());
+					long[] cputarget = new long[lenm1];
+					for(int copy = 0; copy < lenm1; ++copy){
+						cputarget[copy] = masked[copy];
+					}
 
 
-					Transformer.Mask(example.AsSpan(1, lenm1), masked, 8, 3, new Dictionary<ushort, bool>());
-					int split = example[0];
-					int tokensGenerated = (lenm1 * 2) - split;
+					regularizationTokensGenerated += lenm1;
+					int tokensGenerated = lenm1 - split;
 					totalTokensGenerated += tokensGenerated;
 					if (mode == 0)
 					{
@@ -426,25 +432,18 @@ namespace TinyGPT.DecoderV1.Trainer
 							x = y.to(ScalarType.Float64);
 						}
 
-						using (Tensor y = x)
-						{
-							x = y.log_softmax(1);
-						}
-						Tensor logits = tensor(cputarget, ScalarType.Int64, CUDA);
+
 
 						Tensor loss;
-						using (Tensor y = x, target = logits.slice(0, split + 1, lenm1 + 1, 1))
+						using (Tensor y = x, target = tensor(cputarget2, ScalarType.Int64, CUDA))
 						{
-							loss = crossEntropyLoss.forward(y, target);
+							loss = Misc.FastCrossEntropyLoss(y, target, false, false);
 						}
 
 
 
-						using (encoded)
-						{
-							x = encoded.slice(0, 0, lenm1 - 1, 1);
-						}
-						using (Tensor y = x)
+
+						using (Tensor y = encoded)
 						{
 							x = currentTokenEngine.forward(y);
 						}
@@ -458,23 +457,16 @@ namespace TinyGPT.DecoderV1.Trainer
 							x = y.to(ScalarType.Float64);
 						}
 
-						using (Tensor y = x)
+
+
+						using (Tensor y = x, logits = tensor(cputarget, ScalarType.Int64, CUDA))
 						{
-							x = y.log_softmax(1);
-						}
-						using(Tensor y = logits){
-							logits = y.slice(0, 0, lenm1 - 1, 1);
-						}
-						using (Tensor y = x)
-						{
-							using(logits){
-								x = crossEntropyLoss.forward(y, logits);
-							}
+							x = Misc.FastCrossEntropyLoss(y, logits, false, false);
 						}
 
-						using(Tensor y = loss){
+						using (Tensor y = loss){
 							using(x){
-								loss = x.add(y);
+								loss = x.add(y, regularizationTerm);
 							}
 						}
 						Tensor cpuloss;
@@ -493,7 +485,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 
-				totalLosses /= totalTokensGenerated;
+				totalLosses /= totalTokensGenerated + (regularizationTokensGenerated * regularizationTerm);
 
 				Console.WriteLine("Average loss per token: " + totalLosses);
 
