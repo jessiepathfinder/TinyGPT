@@ -25,14 +25,16 @@ namespace TinyGPT.DecoderV1.Trainer
 		//hyperparameters
 		private const int latentTokenSize = 512;
 		private const int maxContextSize = 1024;
-		private const int trainingBatches = 2000000;
-		private const int targetUnlabeledTokensPerBatch = 16384;
-		private const int targetLabeledTokensPerBatch = 2048;
+		private const int trainingBatches = 1000000;
+		private const int targetUnlabeledTokensPerBatch = 4096;
+		private const int targetLabeledTokensPerBatch = 1024;
 		private const int attentionHeads = 12;
 		private const int firstTierAttentionDepth = 1;
 		private const int magicTokenClasses = 4;
 		private const int minimumInputTokens = 5;
 		private const double regularizationTerm = 0.5;
+		private const double firstOccouranceBoost = 3.0;
+		//private const double costScalingTerm = 1024.0;
 
 		[JsonObject(MemberSerialization.Fields)]
 		private sealed class WikipediaArticle
@@ -300,8 +302,8 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			Console.WriteLine("Initializing model...");
 			InitializeDeviceType(DeviceType.CUDA);
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, latentTokenSize, latentTokenSize * attentionHeads, attentionHeads, 1e-6, latentTokenSize, 0);
-			Linear currentTokenEngine = Misc.CreateXavierInitializedLinear(latentTokenSize * attentionHeads, latentTokenSize, false);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, latentTokenSize, latentTokenSize * attentionHeads, attentionHeads, 1e-6, latentTokenSize, 0, 1);
+			Linear currentTokenEngine = Misc.CreateKaimingInitializedLinear(latentTokenSize * attentionHeads, latentTokenSize, false, nn.init.FanInOut.FanIn);
 			notchatgpt.register_module("current_token_prediction_engine", currentTokenEngine);
 
 			notchatgpt.to(CUDA, ScalarType.BFloat16);
@@ -312,8 +314,9 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 			notchatgpt.train(true);
-			
-
+			Span<ushort> masked = stackalloc ushort[maxContextSize];
+			//Scalar costscale = costScalingTerm;
+			Scalar l2regularizationterm = 0.01;
 
 
 
@@ -343,7 +346,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
 			GC.WaitForPendingFinalizers();
 
-			Span<ushort> masked = stackalloc ushort[maxContextSize];
+			
 
 
 
@@ -362,7 +365,6 @@ namespace TinyGPT.DecoderV1.Trainer
 				int totalTokensGenerated = 0;
 				int unlabeledTokensGenerated = 0;
 				int labeledTokensGenerated = 0;
-				int regularizationTokensGenerated = 0;
 
 				double totalLosses = 0;
 
@@ -388,19 +390,24 @@ namespace TinyGPT.DecoderV1.Trainer
 					int lenm1 = example.Length;
 					int split = example[0] + 2;
 					long[] cputarget2 = new long[lenm1 - split];
-					for (int copy = split; copy < lenm1; ++copy){
-						cputarget2[copy - split] = example[copy];
+					double[] boostvector = new double[lenm1 - split];
+					Dictionary<ushort, bool> boostdict = new Dictionary<ushort, bool>();
+					for (int copy = split, c2 = 0; copy < lenm1; ++copy, ++c2){
+						ushort data = example[copy];
+						cputarget2[c2] = data;
+
+						//First-occourance boost
+						boostvector[c2] = boostdict.TryAdd(data, false) ? firstOccouranceBoost : 1;
 					}
 					split -= 2;
 					lenm1 -= 2;
 					Transformer.Mask(example.AsSpan(1, lenm1), masked, 16, 3, new Dictionary<ushort, bool>());
-					long[] cputarget = new long[lenm1];
-					for(int copy = 0; copy < lenm1; ++copy){
-						cputarget[copy] = masked[copy];
+					long[] cputarget = new long[lenm1 - split];
+					for(int copy = split; copy < lenm1; ++copy){
+						cputarget[copy - split] = masked[copy];
 					}
 
 
-					regularizationTokensGenerated += lenm1;
 					int tokensGenerated = lenm1 - split;
 					totalTokensGenerated += tokensGenerated;
 					if (mode == 0)
@@ -417,13 +424,10 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 
-						Tensor encoded = notchatgpt.Encode(masked[..lenm1], 0);
+						Tensor encoded = notchatgpt.Encode(masked[..lenm1], split);
 						Tensor x;
-						using (Tensor y = encoded.slice(0, split, lenm1, 1))
-						{
-							x = notchatgpt.defaultEngine.forward(y);
-						}
-						using (Tensor y = x)
+
+						using (Tensor y = notchatgpt.defaultEngine.forward(encoded))
 						{
 							x = notchatgpt.Decode(y);
 						}
@@ -435,9 +439,9 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 						Tensor loss;
-						using (Tensor y = x, target = tensor(cputarget2, ScalarType.Int64, CUDA))
+						using (Tensor y = x, target = tensor(cputarget2, ScalarType.Int64, CUDA), boost = tensor(boostvector, ScalarType.Float64, CUDA))
 						{
-							loss = Misc.FastCrossEntropyLoss(y, target, false, false);
+							loss = Misc.FastCrossEntropyLoss(y, target, 0.01, false);
 						}
 
 
@@ -461,14 +465,19 @@ namespace TinyGPT.DecoderV1.Trainer
 
 						using (Tensor y = x, logits = tensor(cputarget, ScalarType.Int64, CUDA))
 						{
-							x = Misc.FastCrossEntropyLoss(y, logits, false, false);
+							x = Misc.FastCrossEntropyLoss(y, logits, 0.01, false);
 						}
 
 						using (Tensor y = loss){
 							using(x){
-								loss = x.add(y, regularizationTerm);
+								loss = y.add(x, regularizationTerm);
 							}
 						}
+						/*
+						using(Tensor y = loss){
+							loss = y.div(costscale);
+						}
+						*/
 						Tensor cpuloss;
 						using (loss)
 						{
@@ -484,29 +493,29 @@ namespace TinyGPT.DecoderV1.Trainer
 				}
 
 
-
-				totalLosses /= totalTokensGenerated + (regularizationTokensGenerated * regularizationTerm);
+				totalLosses /= totalTokensGenerated;
 
 				Console.WriteLine("Average loss per token: " + totalLosses);
 
-
-				double alr2 = (adaptiveLearningRate * 0.999) + (totalLosses * 1e-8);
+				
+				double alr2 = (adaptiveLearningRate * 0.999) + (totalLosses * 5e-9);
 				if (alr2 < adaptiveLearningRate)
 				{
 					Console.WriteLine("Setting adaptive learning rate to " + alr2);
 					adaptiveLearningRate = alr2;
 				}
-
+				
 
 				Console.WriteLine("Scaling gradients...");
+				Scalar costdiv = totalTokensGenerated;
 				foreach (Parameter parameter in parameters)
 				{
-					(parameter.grad() ?? throw new Exception("Where is my grad? (should not reach here!)")).div_(totalTokensGenerated);
+					(parameter.grad() ?? throw new Exception("Where is my grad? (should not reach here!)")).div_(costdiv);
 				}
 
 				Console.WriteLine("Applying regularization...");
 				//nn.utils.clip_grad_value_(parameters, 1);
-				notchatgpt.L2Regularize(0.01);
+				notchatgpt.L2Regularize(l2regularizationterm);
 
 
 				Console.WriteLine("Optimizer step");
@@ -514,7 +523,7 @@ namespace TinyGPT.DecoderV1.Trainer
 				//learningRateScheduler.step();
 				//notchatgpt.to(CPU);
 				amsgrad.Step();
-				//notchatgpt.NormalizeFinalBias();
+				notchatgpt.NormalizeBias();
 
 				if (z % 256 == 0)
 				{

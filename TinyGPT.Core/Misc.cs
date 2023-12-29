@@ -5,6 +5,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
+using TorchSharp;
 using TorchSharp.Modules;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
@@ -15,7 +16,7 @@ namespace TinyGPT.Core
 	public static class Misc
 	{
 		private static readonly NLLLoss nlloss = new NLLLoss(reduction: Reduction.None);
-		public static Tensor FastCrossEntropyLoss(Tensor input, Tensor logits, bool square, bool average) {
+		public static Tensor FastCrossEntropyLoss(Tensor input, Tensor logits, double squareboost, bool average, Tensor? boost = null) {
 			using(NewDisposeScope()){
 				Tensor z;
 				using(Tensor y = input.exp()){
@@ -31,9 +32,16 @@ namespace TinyGPT.Core
 						x = z.add(y);
 					}
 				}
-				if(square){
+				if (boost is { })
+				{
 					using Tensor y = x;
-					x = y.mul(y);
+					x = y.mul(boost);
+				}
+				if (squareboost > 0)
+				{
+					using Tensor y = x;
+					using Tensor y2 = x.mul(x);
+					x = y.add(y2, squareboost);
 				}
 				if (average)
 				{
@@ -52,7 +60,7 @@ namespace TinyGPT.Core
 		}
 		
 
-		public static void L2RegularizeIMPL(Tensor? tensor, double lambda)
+		public static void L2RegularizeIMPL(Tensor? tensor, Scalar lambda)
 		{
 
 			if (tensor is null) throw new ArgumentNullException(nameof(tensor));
@@ -64,6 +72,14 @@ namespace TinyGPT.Core
 		{
 			Linear linear = Linear(inputs, outputs, bias);
 			init.xavier_normal_(linear.weight ?? throw new Exception("No weight found (should not reach here)"), gain);
+			return linear;
+		}
+		public static Linear CreateKaimingInitializedLinear(int inputs, int outputs, bool bias, init.FanInOut fanmode, double gain = 1.0)
+		{
+			//temptest
+			//return CreateXavierInitializedLinear(inputs, outputs, bias, gain);
+			Linear linear = Linear(inputs, outputs, bias);
+			init.kaiming_normal_(linear.weight ?? throw new Exception("No weight found (should not reach here)"), gain, fanmode);
 			return linear;
 		}
 		public static void EraseReturnAsync<T>(ArrayPool<T> arrayPool, T[] array, int erase) where T : class
@@ -126,7 +142,7 @@ namespace TinyGPT.Core
 			sizes[0] = heads;
 			sizes[1] = inputs;
 			sizes[2] = outputs;
-			return normal(0, Math.Sqrt(2.0 / (inputs + outputs)), sizes, scalarType, device, require_grad);
+			return normal(0, Math.Sqrt(2.0 / (inputs + (outputs * heads))), sizes, scalarType, device, require_grad);
 		}
 
 	}

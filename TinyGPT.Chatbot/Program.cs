@@ -59,7 +59,7 @@ namespace TinyGPT.Chatbot
 						const int firstTierAttentionDepth = 1;
 						magicTokenClasses = 4;
 						tokenclasses += magicTokenClasses + 1;
-						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, latentTokenSize, latentTokenSize * attentionHeads, attentionHeads, 1e-6, 512, 0);
+						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, latentTokenSize, latentTokenSize * attentionHeads, attentionHeads, 1e-6, 512, 0, 1);
 						themodel.register_module("current_token_prediction_engine", Linear(latentTokenSize * attentionHeads, latentTokenSize, false));
 						themodel.to(ScalarType.BFloat16);
 
