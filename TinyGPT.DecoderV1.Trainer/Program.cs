@@ -33,7 +33,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int magicTokenClasses = 4;
 		private const int minimumInputTokens = 5;
 		private const double regularizationTerm = 0.5;
-		private const double firstOccouranceBoost = 3.0;
+		private const double firstOccouranceBoost = 1.1;
 		//private const double costScalingTerm = 1024.0;
 
 		[JsonObject(MemberSerialization.Fields)]
@@ -302,7 +302,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			Console.WriteLine("Initializing model...");
 			InitializeDeviceType(DeviceType.CUDA);
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, latentTokenSize, latentTokenSize * attentionHeads, attentionHeads, 1e-6, latentTokenSize, 0, 1);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, latentTokenSize, latentTokenSize * attentionHeads, attentionHeads, 1e-6, latentTokenSize, 1, 2);
 			Linear currentTokenEngine = Misc.CreateKaimingInitializedLinear(latentTokenSize * attentionHeads, latentTokenSize, false, nn.init.FanInOut.FanIn);
 			notchatgpt.register_module("current_token_prediction_engine", currentTokenEngine);
 
@@ -441,7 +441,7 @@ namespace TinyGPT.DecoderV1.Trainer
 						Tensor loss;
 						using (Tensor y = x, target = tensor(cputarget2, ScalarType.Int64, CUDA), boost = tensor(boostvector, ScalarType.Float64, CUDA))
 						{
-							loss = Misc.FastCrossEntropyLoss(y, target, 0.01, false);
+							loss = Misc.FastCrossEntropyLoss(y, target, 0.01, false, boost);
 						}
 
 

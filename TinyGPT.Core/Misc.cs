@@ -32,16 +32,16 @@ namespace TinyGPT.Core
 						x = z.add(y);
 					}
 				}
-				if (boost is { })
-				{
-					using Tensor y = x;
-					x = y.mul(boost);
-				}
 				if (squareboost > 0)
 				{
 					using Tensor y = x;
 					using Tensor y2 = x.mul(x);
 					x = y.add(y2, squareboost);
+				}
+				if (boost is { })
+				{
+					using Tensor y = x;
+					x = y.mul(boost);
 				}
 				if (average)
 				{

@@ -47,7 +47,7 @@ namespace TinyGPT.Core
 		private readonly Parameter wordEmbedding;
 		public readonly Linear defaultEngine;
 		private readonly ResidualSingleKeyAttention finalattention;
-		private readonly ResidualComputeLayer finalCompute;
+		private readonly GatedResidualComputeLayer finalCompute;
 		private readonly int extraRecurrence;
 
 
@@ -71,20 +71,20 @@ namespace TinyGPT.Core
 			longs[0] = multipliedWidth;
 			longs[1] = latentTokenSize;
 			defaultEngine = Misc.CreateKaimingInitializedLinear(multipliedWidth, latentTokenSize, false, init.FanInOut.FanIn);
-			finalCompute = new ResidualComputeLayer("", multipliedWidth, computecoresize, epsilon, normKernelSize);
+			finalCompute = new GatedResidualComputeLayer("", multipliedWidth, computecoresize, epsilon, normKernelSize);
 
 			scale = 1.0 / Math.Sqrt(tokenClasses);
 
 			for(int i = 0; i < convAttentionLayers; ++i){
 				//layers.Add(new ResidualGRUAttentionLayer("", multipliedWidth, latentTokenSize, epsilon));
-				layers.Add(new ResidualCausalConvolationalLookback("", multipliedWidth, latentTokenSize, widthMultiplier, epsilon, normKernelSize));
+				layers.Add(new ResidualGatedCausalConvolationalLookback("", multipliedWidth, latentTokenSize, widthMultiplier, epsilon, normKernelSize));
 				//layers.Add(new ResidualComputeLayer("", multipliedWidth, computecoresize, epsilon, normKernelSize));
 			}
 
 			for (int i = 0; i < coreDepth; ++i)
 			{
 				layers.Add(new ResidualSingleKeyAttention("", multipliedWidth, attentionKeySize, attentionValueSize, attentionHeadsCount, epsilon, normKernelSize));
-				layers.Add(new ResidualComputeLayer("", multipliedWidth, computecoresize, epsilon, normKernelSize));
+				layers.Add(new GatedResidualComputeLayer("", multipliedWidth, computecoresize, epsilon, normKernelSize));
 			}
 			finalattention = new ResidualSingleKeyAttention("", multipliedWidth, attentionKeySize, attentionValueSize, attentionHeadsCount, epsilon, normKernelSize);
 			finalBias = Parameter(zeros(tokenClasses));
@@ -168,7 +168,7 @@ namespace TinyGPT.Core
 				}
 
 
-				ResidualComputeLayer finalCompute = this.finalCompute;
+				GatedResidualComputeLayer finalCompute = this.finalCompute;
 				ResidualSingleKeyAttention finalattention = this.finalattention;
 
 				using (Tensor mask = Transformer.CreateCausalAttentionMask(len, len, ScalarType.Float64, wordEmbedding.device))

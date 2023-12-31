@@ -63,17 +63,20 @@ namespace TinyGPT.Core
 	{
 		public void L2Regularize(Scalar lambda);
 	}
-	public sealed class ResidualCausalConvolationalLookback : Module<Tensor, Tensor>, IL2Regularizable
+	public sealed class ResidualGatedCausalConvolationalLookback : Module<Tensor, Tensor>, IL2Regularizable
 	{
 		private readonly Linear input;
 		private readonly Conv1d output;
+		private readonly Conv1d gate;
 		private readonly long normKernelSize;
 		private readonly double epsilon;
 		private readonly int shift;
-		public ResidualCausalConvolationalLookback(string name, int size, int compressedSize, int kernelSize, double epsilon, int normKernelSize) : base(name)
+		private static readonly Scalar one = 1;
+		public ResidualGatedCausalConvolationalLookback(string name, int size, int compressedSize, int kernelSize, double epsilon, int normKernelSize) : base(name)
 		{
 			input = Misc.CreateKaimingInitializedLinear(size, compressedSize, false, init.FanInOut.FanIn);
 			output = Conv1d(compressedSize, size, kernelSize);
+			gate = Conv1d(compressedSize, size, kernelSize);
 			shift = (kernelSize) - 1;
 			
 			this.normKernelSize = normKernelSize;
@@ -95,9 +98,21 @@ namespace TinyGPT.Core
 				{
 					y = pad(x, (shift, 0), PaddingModes.Zeros, 0);
 				}
+				Tensor z;
 				using (Tensor x = y)
 				{
 					y = output.forward(x);
+					z = gate.forward(x);
+				}
+				using(Tensor x = z){
+					z = x.sigmoid();
+				}
+				using(Tensor x = z, x2 = y){
+					y = x2.mul(x);
+					z = one - x;
+				}
+				using(Tensor x = z){
+					z = x.transpose(1, 0);
 				}
 				using (Tensor x = y)
 				{
@@ -105,7 +120,13 @@ namespace TinyGPT.Core
 				}
 				using (Tensor x = y)
 				{
-					y = x.add(input1);
+					Tensor z2;
+					using(z){
+						z2 = input1.mul(z);
+					}
+					using(z2){
+						y = x.add(z2);
+					}
 				}
 				using (y)
 				{
@@ -118,87 +139,22 @@ namespace TinyGPT.Core
 		{
 			Misc.L2RegularizeIMPL(input.weight, lambda);
 			Misc.L2RegularizeIMPL(output.weight, lambda);
+			Misc.L2RegularizeIMPL(gate.weight, lambda);
 		}
 	}
-	public sealed class ResidualGRUAttentionLayer : Module<Tensor, Tensor>, IL2Regularizable
-	{
-		private readonly Linear input;
-		private readonly GRU output;
-		private readonly Parameter feedforwardWeight;
-		private readonly Parameter secondaryWeight;
-		private readonly Parameter secondaryBias;
-		private readonly LayerNorm layerNorm;
-
-		private static readonly Scalar initialScale = 5.0 / 3.0;
-		public ResidualGRUAttentionLayer(string name, int size, int compressedSize, double epsilon) : base(name)
-		{
-			input = Misc.CreateKaimingInitializedLinear(size, compressedSize, false, init.FanInOut.FanIn);
-			output = GRU(compressedSize, size, batchFirst: true);
-			secondaryWeight = Parameter(zeros(size).fill_(initialScale));
-			secondaryBias = Parameter(zeros(size));
-			feedforwardWeight = Parameter(ones(size));
-			layerNorm = LayerNorm(size, epsilon, false);
-			RegisterComponents();
-		}
-
-		public override Tensor forward(Tensor input1)
-		{
-			using (NewDisposeScope())
-			{
-				Tensor y;
-				using (Tensor x = input.forward(input1))
-				{
-					y = x.unsqueeze(0);
-				}
-				using (Tensor x = y)
-				{
-					(y, Tensor trash) = output.forward(x);
-					trash.Dispose();
-				}
-				using (Tensor x = y)
-				{
-					y = x.squeeze(0);
-				}
-				using (Tensor x = y)
-				{
-					y = x.mul(secondaryWeight);
-				}
-				using (Tensor x = y, z = input1.mul(feedforwardWeight))
-				{
-					y = x.add(z);
-				}
-				using (Tensor x = y)
-				{
-					y = x.add(secondaryBias);
-				}
-				using (y)
-				{
-					return layerNorm.forward(y).MoveToOuterDisposeScope();
-				}
-			}
-		}
-
-		public void L2Regularize(Scalar lambda)
-		{
-			//NOTE: gate doesn't need regularization
-			Misc.L2RegularizeIMPL(input.weight, lambda);
-			foreach(Parameter parameter in output.parameters()){
-				if(parameter.Dimensions > 1){
-					Misc.L2RegularizeIMPL(parameter, lambda);
-				}
-			}
-		}
-	}
-	public sealed class ResidualComputeLayer : Module<Tensor, Tensor>, IL2Regularizable
+	public sealed class GatedResidualComputeLayer : Module<Tensor, Tensor>, IL2Regularizable
 	{
 		private readonly Linear input;
 		private readonly Linear output;
+		private readonly Linear gate;
 		private readonly long normKernelSize;
 		private readonly double epsilon;
-		public ResidualComputeLayer(string name, int size, int coresize, double epsilon, int normKernelSize) : base(name)
+		private static readonly Scalar one = 1;
+		public GatedResidualComputeLayer(string name, int size, int coresize, double epsilon, int normKernelSize) : base(name)
 		{
 			input = Misc.CreateXavierInitializedLinear(size, coresize, true);
 			output = Misc.CreateXavierInitializedLinear(coresize, size, true);
+			gate = Misc.CreateXavierInitializedLinear(coresize, size, true);
 			this.normKernelSize = normKernelSize;
 			this.epsilon = epsilon;
 			RegisterComponents();
@@ -213,11 +169,26 @@ namespace TinyGPT.Core
 				{
 					y = CustomActivations.TanhELU(x);
 				}
+				Tensor z;
 				using(Tensor x = y){
 					y = output.forward(x);
+					z = gate.forward(x);
 				}
-				using(Tensor x = y){
-					y = x.add(input1);
+				using (Tensor x = z, x2 = y)
+				{
+					y = x2.mul(x);
+					z = one - x;
+				}
+				using (Tensor x = y){
+					Tensor z2;
+					using (z)
+					{
+						z2 = input1.mul(z);
+					}
+					using (z2)
+					{
+						y = x.add(z2);
+					}
 				}
 				using (y)
 				{
@@ -228,7 +199,7 @@ namespace TinyGPT.Core
 
 		public void L2Regularize(Scalar lambda)
 		{
-			//NOTE: gate doesn't need regularization
+			Misc.L2RegularizeIMPL(gate.weight, lambda);
 			Misc.L2RegularizeIMPL(input.weight, lambda);
 			Misc.L2RegularizeIMPL(output.weight, lambda);
 		}
@@ -262,6 +233,9 @@ namespace TinyGPT.Core
 				{
 					x = exit.forward(y);
 				}
+				using(Tensor y = x, z = input.mul(gate)){
+					x = y.add(z);
+				}
 				using (x)
 				{
 					return CustomActivations.KernelNorm(x, normKernelSize, epsilon).MoveToOuterDisposeScope();
@@ -280,11 +254,13 @@ namespace TinyGPT.Core
 		private readonly Parameter queries;
 		private readonly Linear keys;
 		private readonly Parameter values;
+		private readonly Parameter gate;
 
 		public ResidualSingleKeyAttention(string name, int inputSize, int keySize, int valueSize, int heads, double epsilon, long normKernelSize) : base(name)
 		{
 			queries = Parameter(Misc.GenerateXavierQueryMatrix(inputSize, keySize, heads));
 			exit = Misc.CreateXavierInitializedLinear(valueSize * heads, inputSize, true);
+			gate = Parameter(ones(inputSize));
 			this.normKernelSize = normKernelSize;
 			this.epsilon = epsilon;
 			keys = Misc.CreateKaimingInitializedLinear(inputSize, keySize, false, init.FanInOut.FanIn);
