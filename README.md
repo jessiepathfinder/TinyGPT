@@ -5,7 +5,8 @@
 ![image](https://github.com/jessiepathfinder/TinyGPT/assets/55774978/47448f3f-65c8-4088-910e-d31701296108)
 
 ## Current model architecture
-![image](https://github.com/jessiepathfinder/TinyGPT/assets/55774978/44e7bf31-2afd-4848-a4fe-a3a6403c3b34)
+![image](https://github.com/jessiepathfinder/TinyGPT/assets/55774978/1f5c0f59-e8ff-4400-9332-205daa759547)
+
 
 ### Notes
 1. TinyGPT's norm uses group norm instead of layer norm
