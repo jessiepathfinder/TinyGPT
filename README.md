@@ -8,7 +8,7 @@
 ![image](https://github.com/jessiepathfinder/TinyGPT/assets/55774978/44e7bf31-2afd-4848-a4fe-a3a6403c3b34)
 
 ### Notes
-1. TinyGPT's norm uses group norm instead of kernel norm
+1. TinyGPT's norm uses group norm instead of layer norm
 2. TinyGPT's multi-head attention shares the same key over all heads
 3. TinyGPT uses 10 attention heads
 4. All Conv1D layers are causal conv
