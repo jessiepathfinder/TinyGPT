@@ -5,7 +5,8 @@
 ![image](https://github.com/jessiepathfinder/TinyGPT/assets/55774978/47448f3f-65c8-4088-910e-d31701296108)
 
 ## Current model architecture
-![image](https://github.com/jessiepathfinder/TinyGPT/assets/55774978/0679774e-5a2f-460c-ac6b-65552c6e6db0)
+![image](https://github.com/jessiepathfinder/TinyGPT/assets/55774978/a4058300-3d97-4bc2-b410-4a0bf9031c3b)
+
 
 
 
