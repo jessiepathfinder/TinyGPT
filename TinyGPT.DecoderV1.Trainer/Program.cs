@@ -25,10 +25,10 @@ namespace TinyGPT.DecoderV1.Trainer
 		//hyperparameters
 		private const int latentTokenSize = 512;
 		private const int maxContextSize = 1024;
-		private const int trainingBatches = 1000000;
-		private const int targetUnlabeledTokensPerBatch = 4096;
+		private const int trainingBatches = 2000000;
+		private const int targetUnlabeledTokensPerBatch = 1024;
 		private const int targetLabeledTokensPerBatch = 1024;
-		private const int attentionHeads = 12;
+		private const int attentionHeads = 10;
 		private const int firstTierAttentionDepth = 1;
 		private const int magicTokenClasses = 4;
 		private const int minimumInputTokens = 5;
@@ -302,13 +302,13 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			Console.WriteLine("Initializing model...");
 			InitializeDeviceType(DeviceType.CUDA);
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, latentTokenSize, latentTokenSize * attentionHeads, attentionHeads, 1e-6, latentTokenSize, 1, 2);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, latentTokenSize, attentionHeads, 1e-6, latentTokenSize, 2, 2);
 			Linear currentTokenEngine = Misc.CreateKaimingInitializedLinear(latentTokenSize * attentionHeads, latentTokenSize, false, nn.init.FanInOut.FanIn);
 			notchatgpt.register_module("current_token_prediction_engine", currentTokenEngine);
 
 			notchatgpt.to(CUDA, ScalarType.BFloat16);
 			IEnumerable<Parameter> parameters = notchatgpt.parameters();
-			AMSGrad amsgrad = new AMSGrad(parameters, 0.95, 0.999, 1e-6);
+			AMSGrad amsgrad = new AMSGrad(parameters, 0.9, 0.999, 1e-6);
 			//LRScheduler learningRateScheduler = ExponentialLR(adam, 0.9999, 0, true);
 
 
@@ -441,7 +441,7 @@ namespace TinyGPT.DecoderV1.Trainer
 						Tensor loss;
 						using (Tensor y = x, target = tensor(cputarget2, ScalarType.Int64, CUDA), boost = tensor(boostvector, ScalarType.Float64, CUDA))
 						{
-							loss = Misc.FastCrossEntropyLoss(y, target, 0.01, false, boost);
+							loss = Misc.FastCrossEntropyLoss(y, target, 0.025, false, boost);
 						}
 
 
@@ -465,7 +465,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 						using (Tensor y = x, logits = tensor(cputarget, ScalarType.Int64, CUDA))
 						{
-							x = Misc.FastCrossEntropyLoss(y, logits, 0.01, false);
+							x = Misc.FastCrossEntropyLoss(y, logits, 0.025, false);
 						}
 
 						using (Tensor y = loss){

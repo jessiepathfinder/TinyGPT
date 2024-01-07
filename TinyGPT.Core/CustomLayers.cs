@@ -14,6 +14,7 @@ using static TorchSharp.torch;
 
 using static TorchSharp.torch.nn;
 using static TorchSharp.torch.nn.functional;
+using Module = TorchSharp.torch.nn.Module;
 
 namespace TinyGPT.Core
 {
@@ -266,6 +267,128 @@ namespace TinyGPT.Core
 			keys = Misc.CreateKaimingInitializedLinear(inputSize, keySize, false, init.FanInOut.FanIn);
 			values = Parameter(Misc.GenerateXavierQueryMatrix(inputSize, valueSize, heads));
 			RegisterComponents();
+		}
+	}
+	public sealed class LongTermMemoryResidualComputeLayer : Module, IL2Regularizable
+	{
+		private readonly Linear inputGate;
+		private readonly Linear input;
+		private readonly Linear outputGate;
+		private readonly Linear output;
+		private static readonly Scalar one = 1;
+		private static readonly double gain = 5.0 / 3.0;
+		private readonly double epsilon;
+		private readonly long normKernelSize;
+		public LongTermMemoryResidualComputeLayer(string name, int size, double epsilon, long normKernelSize) : base(name)
+		{
+			inputGate = Misc.CreateXavierInitializedLinear(size, size, true);
+			input = Misc.CreateXavierInitializedLinear(size, size, true);
+			outputGate = Misc.CreateXavierInitializedLinear(size, size, true);
+			output = Misc.CreateXavierInitializedLinear(size, size, true, gain);
+			RegisterComponents();
+			this.epsilon = epsilon;
+			this.normKernelSize = normKernelSize;
+		}
+		public void Forward(ref Tensor hidden, ref Tensor? memory, bool disposemem){
+			using(NewDisposeScope()){
+				Tensor z;
+				using (Tensor x = inputGate.forward(hidden))
+				{
+					z = x.sigmoid();
+				}
+				Tensor y;
+				using (Tensor x = input.forward(hidden))
+				{
+					y = x.tanh();
+				}
+				if (memory is null)
+				{
+					using (z)
+					{
+						using (y)
+						{
+							memory = y.mul(z);
+						}
+					}
+				}
+				else
+				{
+					using (Tensor x = y)
+					{
+						y = x.mul(z);
+					}
+					using (Tensor x = z)
+					{
+						z = one - x;
+					}
+					using (Tensor x = memory)
+					{
+						using (z)
+						{
+							memory = memory.mul(z);
+						}
+					}
+					using (Tensor x = memory)
+					{
+						using (y)
+						{
+							memory = memory.add(y).MoveToOuterDisposeScope();
+						}
+					}
+				}
+				if (disposemem)
+				{
+					using(memory){
+						z = outputGate.forward(hidden);
+						y = output.forward(memory);
+					}
+					memory = null;
+					using(Tensor x = z){
+						z = x.sigmoid();
+					}
+					using(Tensor x = y){
+						y = x.mul(z);
+					}
+				} else{
+					using (Tensor x = outputGate.forward(hidden))
+					{
+						z = x.sigmoid();
+					}
+					using (Tensor x = output.forward(memory))
+					{
+						y = x.mul(z);
+					}
+				}
+				
+
+				using(Tensor x = z){
+					z = one - x;
+				}
+				using (Tensor x = hidden){
+					using(z){
+						hidden = x.mul(z);
+					}
+				}
+				using (Tensor x = hidden)
+				{
+					using (y)
+					{
+						hidden = x.add(y);
+					}
+				}
+				using (Tensor x = hidden){
+					hidden = CustomActivations.KernelNorm(x, normKernelSize, epsilon).MoveToOuterDisposeScope();
+				}
+				
+			}
+		}
+
+		public void L2Regularize(Scalar lambda)
+		{
+			Misc.L2RegularizeIMPL(input.weight, lambda);
+			Misc.L2RegularizeIMPL(inputGate.weight, lambda);
+			Misc.L2RegularizeIMPL(output.weight, lambda);
+			Misc.L2RegularizeIMPL(outputGate.weight, lambda);
 		}
 	}
 	public sealed class ResidualMultiQueryAttention : Module<Tensor, Tensor>, IL2Regularizable
