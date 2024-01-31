@@ -3,7 +3,10 @@ using Newtonsoft.Json.Linq;
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.ComponentModel.Design;
+using System.IO.Compression;
+using System.Linq.Expressions;
 using System.Runtime.ExceptionServices;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Schema;
@@ -33,7 +36,12 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int magicTokenClasses = 4;
 		private const int minimumInputTokens = 5;
 		private const double regularizationTerm = 0.5;
-		private const double firstOccouranceBoost = 1.1;
+		private const double firstOccouranceBoost = 1.5;
+		private const int maxOutputBlockSize = 128;
+		private const byte maskProbability = 24;
+		private const byte randomRemoveProbability = 12;
+		private const byte randomVerbCorruptionProbability = 32;
+		private const int suboptimalSkipInitialTokens = 32;
 		//private const double costScalingTerm = 1024.0;
 
 		[JsonObject(MemberSerialization.Fields)]
@@ -64,6 +72,7 @@ namespace TinyGPT.DecoderV1.Trainer
 				Console.WriteLine("Null encoder dictionary");
 				return;
 			}
+			
 			int maxlen = 0;
 			int tokenclasses = 0;
 			foreach (KeyValuePair<string, ushort> keyValuePair in dict)
@@ -71,17 +80,26 @@ namespace TinyGPT.DecoderV1.Trainer
 				maxlen = Math.Max(maxlen, keyValuePair.Key.Length);
 				tokenclasses = Math.Max(keyValuePair.Value, tokenclasses);
 			}
+			Console.WriteLine("Optimizing dictionary...");
+			IReadOnlyDictionary<string, OptimizedTokenizerEntry>? dict1 = Misc.OptimizeDictionary(dict);
 
-			//2 magic token types
-			//[START_GPT], [END_GPT]
+
+			//4 magic token types
+			//[START_GPT], [END_GPT], [WIKI_SEPERATOR], [MASK]
 			tokenclasses += magicTokenClasses + 1;
 			Console.WriteLine("Loading ELI5 + WikiQA question answering dataset...");
-			string[][]? questionanswering = JsonConvert.DeserializeObject<string[][]>(File.ReadAllText(datadir + "QuestionAnswering.json"));
-			if (questionanswering is null)
-			{
-				Console.WriteLine("Null question answering dataset");
-				return;
+			Queue<string> dataqueue = new Queue<string>();
+			//File.ReadAllText(datadir + "QuestionAnsweringV2.jsonl.deflate")
+
+			using (StreamReader reader = new StreamReader(new DeflateStream(new FileStream(datadir + "QuestionAnsweringV2.jsonl.deflate", FileMode.Open, FileAccess.Read, FileShare.Read, 16777216, FileOptions.SequentialScan), CompressionMode.Decompress, false), Encoding.UTF8, false, 16777216, false)){
+			read:
+				string? line = reader.ReadLine();
+				if(line is { }){
+					dataqueue.Enqueue(line);
+					goto read;
+				}
 			}
+			string[]? questionanswering = dataqueue.ToArray();
 			int wqlen2 = questionanswering.Length;
 
 			Console.WriteLine("Loading simple english wikipedia dataset...");
@@ -116,6 +134,7 @@ namespace TinyGPT.DecoderV1.Trainer
 					Span<ushort> encbuffer2 = encbuffer.Slice(1, maxContextSize);
 					int mywqlen = wqlength;
 					int mywikilen = wikilen;
+					//int sa2 = suboptimalSkipInitialTokens + 2;
 
 					while (true)
 					{
@@ -125,10 +144,18 @@ namespace TinyGPT.DecoderV1.Trainer
 							break;
 						}
 						a -= 1;
-						string[] pair = questionanswering[a];
+						string raw = questionanswering[a];
+						bool suboptimal = raw[0] == '!'; //suboptimal flag
+						if (suboptimal){
+							raw = raw.Substring(1);
+						}
+						string[]? pair = JsonConvert.DeserializeObject<string[]>(raw);
+						if(pair is null){
+							continue;
+						}
 
 
-						int size1 = Transformer.Tokenize(dict, encbuffer2, pair[0], maxlen, magicTokenClasses);
+						int size1 = Transformer.Tokenize(dict1, encbuffer2, pair[0], maxlen, magicTokenClasses);
 						if (size1 == maxContextSize)
 						{
 							continue;
@@ -137,7 +164,8 @@ namespace TinyGPT.DecoderV1.Trainer
 						{
 							continue;
 						}
-						ushort encsize = (ushort)size1;
+						int encsize2 = size1 + (suboptimal ? suboptimalSkipInitialTokens : 0);
+						ushort encsize = (ushort)encsize2;
 
 
 						encbuffer[size1++] = 0; //user-to-GPT context switch
@@ -145,9 +173,9 @@ namespace TinyGPT.DecoderV1.Trainer
 						{
 							continue;
 						}
-						int encsize2 = size1;
-						int ctd = Transformer.Tokenize(dict, encbuffer2[size1..], pair[1], maxlen, magicTokenClasses);
-						if (ctd == 0)
+						//int encsize2 = size1;
+						int ctd = Transformer.Tokenize(dict1, encbuffer2[size1..], pair[1], maxlen, magicTokenClasses);
+						if(ctd < minimumInputTokens | (suboptimal & ctd <= suboptimalSkipInitialTokens))
 						{
 							continue;
 						}
@@ -161,7 +189,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 
-						alldata.Enqueue(encbuffer[..(size1)].ToArray());
+						alldata.Enqueue(encbuffer[..(size1 + 1)].ToArray());
 
 
 						if ((a & 4095) == 4095)
@@ -209,7 +237,7 @@ namespace TinyGPT.DecoderV1.Trainer
 						{
 							continue;
 						}
-						int size2 = Transformer.Tokenize(dict, encbuffer2, wikititle, maxlen, magicTokenClasses);
+						int size2 = Transformer.Tokenize(dict1, encbuffer2, wikititle, maxlen, magicTokenClasses);
 						if (size2 == maxContextSize)
 						{
 							continue;
@@ -246,7 +274,7 @@ namespace TinyGPT.DecoderV1.Trainer
 								case "references":
 									continue;
 							}
-							int size1 = Transformer.Tokenize(dict, encbuffer2[size2..], title, maxlen, magicTokenClasses);
+							int size1 = Transformer.Tokenize(dict1, encbuffer2[size2..], title, maxlen, magicTokenClasses);
 							if (size1 == 0)
 							{
 								continue;
@@ -265,7 +293,7 @@ namespace TinyGPT.DecoderV1.Trainer
 								continue;
 							}
 							int encsize2 = size1;
-							int ctd = Transformer.Tokenize(dict, encbuffer2[size1..], text.Replace("'''", null).Replace("''", null), maxlen, magicTokenClasses);
+							int ctd = Transformer.Tokenize(dict1, encbuffer2[size1..], text.Replace("'''", null).Replace("''", null), maxlen, magicTokenClasses);
 							if (ctd == 0)
 							{
 								continue;
@@ -280,7 +308,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 
-							alldata.Enqueue(encbuffer[..(size1)].ToArray());
+							alldata.Enqueue(encbuffer[..(size1 + 1)].ToArray());
 
 
 						}
@@ -296,27 +324,31 @@ namespace TinyGPT.DecoderV1.Trainer
 				thrlist[z] = thread;
 				thread.Start();
 			}
-
+			string[] tokens = new string[tokenclasses];
+			foreach(KeyValuePair<string, ushort> kvp in dict){
+				tokens[kvp.Value + magicTokenClasses] = kvp.Key;
+			}
 
 
 
 			Console.WriteLine("Initializing model...");
 			InitializeDeviceType(DeviceType.CUDA);
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, latentTokenSize, attentionHeads, 1e-6, latentTokenSize, 2, 2);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, attentionHeads, 1e-6, latentTokenSize, 3, 3);
 			Linear currentTokenEngine = Misc.CreateKaimingInitializedLinear(latentTokenSize * attentionHeads, latentTokenSize, false, nn.init.FanInOut.FanIn);
 			notchatgpt.register_module("current_token_prediction_engine", currentTokenEngine);
+			Dropout dropout = torch.nn.Dropout(0.5);
 
 			notchatgpt.to(CUDA, ScalarType.BFloat16);
 			IEnumerable<Parameter> parameters = notchatgpt.parameters();
-			AMSGrad amsgrad = new AMSGrad(parameters, 0.9, 0.999, 1e-6);
+			AdaBelief amsgrad = new AdaBelief(parameters, 0.9, 0.999, 1e-6);
+			List<ushort> options = new List<ushort>();
 			//LRScheduler learningRateScheduler = ExponentialLR(adam, 0.9999, 0, true);
-
+			Span<byte> rsb = stackalloc byte[maxContextSize];
 
 
 			notchatgpt.train(true);
 			Span<ushort> masked = stackalloc ushort[maxContextSize];
 			//Scalar costscale = costScalingTerm;
-			Scalar l2regularizationterm = 0.01;
 
 
 
@@ -335,6 +367,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			Console.WriteLine("Optimizing memory usage...");
 			questionanswering = null;
 			wikiarticles = null;
+			dict1 = null;
 			wqlen2 = wikisplit;
 			ushort[][] tokenized = alldata.ToArray();
 
@@ -389,9 +422,20 @@ namespace TinyGPT.DecoderV1.Trainer
 
 					int lenm1 = example.Length;
 					int split = example[0] + 2;
+					int maxShift = (lenm1 - split) - maxOutputBlockSize;
+					Dictionary<ushort, bool> boostdict = new Dictionary<ushort, bool>();
+					if (maxShift > 2){
+
+						for (int stop = split + RandomNumberGenerator.GetInt32(0, maxShift); split < stop; ++split){
+							boostdict.TryAdd(example[split], true);
+						}
+						lenm1 = split + maxOutputBlockSize;
+					}
+
 					long[] cputarget2 = new long[lenm1 - split];
 					double[] boostvector = new double[lenm1 - split];
-					Dictionary<ushort, bool> boostdict = new Dictionary<ushort, bool>();
+					
+					
 					for (int copy = split, c2 = 0; copy < lenm1; ++copy, ++c2){
 						ushort data = example[copy];
 						cputarget2[c2] = data;
@@ -401,9 +445,213 @@ namespace TinyGPT.DecoderV1.Trainer
 					}
 					split -= 2;
 					lenm1 -= 2;
-					Transformer.Mask(example.AsSpan(1, lenm1), masked, 16, 3, new Dictionary<ushort, bool>());
+					Dictionary<ushort, bool> blacklist = new Dictionary<ushort, bool>();
+					int newsplit = Transformer.MaskOrRamdomRemove(example.AsSpan(1, split), masked, maskProbability, randomRemoveProbability, 3, blacklist);
+					Transformer.Mask(example.AsSpan(1 + split, lenm1 - split), masked[newsplit..], maskProbability, 3, blacklist);
+					lenm1 -= split - newsplit;
+					split = newsplit;
+					RandomNumberGenerator.Fill(rsb[..lenm1]);
+					for (int copy = 0; copy < lenm1; ++copy)
+					{
+						if (rsb[copy] > randomVerbCorruptionProbability)
+						{
+							continue;
+						}
+
+						ref ushort token = ref masked[copy];
+
+						string? value = tokens[token];
+
+						if (value is null)
+						{
+							continue;
+						}
+						if (value.EndsWith("ing"))
+						{
+							value = value.Substring(0, value.Length - 3);
+							if (dict.TryGetValue(value, out ushort tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "ed", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "s", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "d", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "en", out tkn))
+							{
+								options.Add(tkn);
+							}
+						}
+						else if (value.EndsWith("ed"))
+						{
+							value = value.Substring(0, value.Length - 2);
+							if (dict.TryGetValue(value, out ushort tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "ing", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "s", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "d", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "en", out tkn))
+							{
+								options.Add(tkn);
+							}
+						}
+						else if (value.EndsWith("en"))
+						{
+							value = value.Substring(0, value.Length - 2);
+							if (dict.TryGetValue(value, out ushort tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "ing", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "s", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "d", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "ed", out tkn))
+							{
+								options.Add(tkn);
+							}
+						}
+						else if (value.EndsWith('s'))
+						{
+							value = value.Substring(0, value.Length - 1);
+							if (dict.TryGetValue(value, out ushort tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "ing", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "ed", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "d", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "en", out tkn))
+							{
+								options.Add(tkn);
+							}
+						}
+						else if (value.EndsWith('d'))
+						{
+							value = value.Substring(0, value.Length - 1);
+							if (dict.TryGetValue(value, out ushort tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "ing", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "ed", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "s", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "en", out tkn))
+							{
+								options.Add(tkn);
+							}
+						}
+						else
+						{
+							if (dict.TryGetValue(value + "en", out ushort tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "ing", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "ed", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "d", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "en", out tkn))
+							{
+								options.Add(tkn);
+							}
+						}
+						string val2 = value.ToLower();
+
+						if (val2 == value)
+						{
+							val2 = (value.Length > 1) ? (char.ToUpper(value[0]) + value.Substring(1)) : value.ToUpper();
+						}
+						if (val2 != value)
+						{
+							if (dict.TryGetValue(val2, out ushort tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(val2 + "en", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(val2 + "ing", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(val2 + "ed", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(value + "d", out tkn))
+							{
+								options.Add(tkn);
+							}
+							if (dict.TryGetValue(val2 + "en", out tkn))
+							{
+								options.Add(tkn);
+							}
+						}
+						int oc = options.Count;
+						if (oc == 0)
+						{
+							continue;
+						}
+						token = (ushort)(options[oc == 1 ? 0 : RandomNumberGenerator.GetInt32(0, oc)] + magicTokenClasses);
+						options.Clear();
+					}
 					long[] cputarget = new long[lenm1 - split];
-					for(int copy = split; copy < lenm1; ++copy){
+					for (int copy = split; copy < lenm1; ++copy){
 						cputarget[copy - split] = masked[copy];
 					}
 
@@ -418,26 +666,23 @@ namespace TinyGPT.DecoderV1.Trainer
 					{
 						unlabeledTokensGenerated += tokensGenerated;
 					}
-
+					
 					using (NewDisposeScope())
 					{
 
-
-
-						Tensor encoded = notchatgpt.Encode(masked[..lenm1], split);
+						Tensor encoded = notchatgpt.Encode(masked[..lenm1], split, 0.5);
 						Tensor x;
-
-						using (Tensor y = notchatgpt.defaultEngine.forward(encoded))
-						{
-							x = notchatgpt.Decode(y);
+						using(Tensor y = encoded){
+							encoded = dropout.forward(y);
 						}
-						using (Tensor y = x)
+
+						using (Tensor y = notchatgpt.DefaultDecode(encoded))
 						{
 							x = y.to(ScalarType.Float64);
 						}
 
 
-
+						
 						Tensor loss;
 						using (Tensor y = x, target = tensor(cputarget2, ScalarType.Int64, CUDA), boost = tensor(boostvector, ScalarType.Float64, CUDA))
 						{
@@ -505,17 +750,18 @@ namespace TinyGPT.DecoderV1.Trainer
 					adaptiveLearningRate = alr2;
 				}
 				
-
+				
 				Console.WriteLine("Scaling gradients...");
 				Scalar costdiv = totalTokensGenerated;
 				foreach (Parameter parameter in parameters)
 				{
 					(parameter.grad() ?? throw new Exception("Where is my grad? (should not reach here!)")).div_(costdiv);
 				}
-
+				
 				Console.WriteLine("Applying regularization...");
 				//nn.utils.clip_grad_value_(parameters, 1);
-				notchatgpt.L2Regularize(l2regularizationterm);
+				notchatgpt.L2Regularize(0.001);
+				//notchatgpt.L1Regularize(0.1);
 
 
 				Console.WriteLine("Optimizer step");
@@ -523,7 +769,6 @@ namespace TinyGPT.DecoderV1.Trainer
 				//learningRateScheduler.step();
 				//notchatgpt.to(CPU);
 				amsgrad.Step();
-				notchatgpt.NormalizeBias();
 
 				if (z % 256 == 0)
 				{

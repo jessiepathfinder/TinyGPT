@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Google.Protobuf.WellKnownTypes;
+using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
@@ -13,8 +14,38 @@ using static TorchSharp.torch.nn.functional;
 
 namespace TinyGPT.Core
 {
+	public readonly struct OptimizedTokenizerEntry{
+		public readonly ushort value;
+		public readonly bool fastret;
+
+		public OptimizedTokenizerEntry(ushort value, bool fastret)
+		{
+			this.value = value;
+			this.fastret = fastret;
+		}
+	}
 	public static class Misc
 	{
+		public static Dictionary<string, OptimizedTokenizerEntry> OptimizeDictionary(IReadOnlyDictionary<string, ushort> input){
+			string[] keys = input.Keys.ToArray();
+			int len = keys.Length;
+			Dictionary<string, OptimizedTokenizerEntry> thedict = new Dictionary<string, OptimizedTokenizerEntry>(len);
+
+			foreach (KeyValuePair<string, ushort> kvp in input){
+				bool fastret = true;
+				string str = kvp.Key;
+
+				for(int i = 0, sl = str.Length; i < len; ){
+					string str2 = keys[i++];
+					if (str2.Length > sl && str2.StartsWith(str)){
+						fastret = false;
+						break;
+					}
+				}
+				thedict.Add(str, new OptimizedTokenizerEntry(kvp.Value, fastret));
+			}
+			return thedict;
+		}
 		private static readonly NLLLoss nlloss = new NLLLoss(reduction: Reduction.None);
 		public static Tensor FastCrossEntropyLoss(Tensor input, Tensor logits, double squareboost, bool average, Tensor? boost = null) {
 			using(NewDisposeScope()){
@@ -58,7 +89,6 @@ namespace TinyGPT.Core
 
 			}
 		}
-		
 
 		public static void L2RegularizeIMPL(Tensor? tensor, Scalar lambda)
 		{
@@ -80,6 +110,63 @@ namespace TinyGPT.Core
 			//return CreateXavierInitializedLinear(inputs, outputs, bias, gain);
 			Linear linear = Linear(inputs, outputs, bias);
 			init.kaiming_normal_(linear.weight ?? throw new Exception("No weight found (should not reach here)"), gain, fanmode);
+			return linear;
+		}
+		public static Linear CreateSparseKaimingInitializedLinear(int inputs, int outputs, bool bias, init.FanInOut fanmode, double gain = 1.0, double dropout = 0.5)
+		{
+			Linear linear = Linear(inputs, outputs, bias);
+			Tensor weight = linear.weight ?? throw new Exception("No weight found (should not reach here)");
+			init.kaiming_normal_(weight, gain / (1.0 - dropout), fanmode);
+			if(dropout > 0){
+				using (no_grad())
+				{
+					using Dropout dropout1 = Dropout(dropout, true);
+					dropout1.forward(weight);
+				}
+			}
+			return linear;
+		}
+		public static Linear CreateSparseXavierInitializedLinear(int inputs, int outputs, bool bias, double gain = 1.0, double dropout = 0.5)
+		{
+			Linear linear = Linear(inputs, outputs, bias);
+			Tensor weight = linear.weight ?? throw new Exception("No weight found (should not reach here)");
+			init.xavier_normal_(weight, gain / (1.0 - dropout));
+			if (dropout > 0)
+			{
+				using (no_grad())
+				{
+					using Dropout dropout1 = Dropout(dropout, true);
+					dropout1.forward(weight);
+				}
+			}
+			return linear;
+		}
+		public static Conv1d CreateSparseConv(int inputs, int outputs, int kernelSize, double dropout = 0.5)
+		{
+			Conv1d conv = Conv1d(inputs, outputs, kernelSize);
+			if (dropout > 0)
+			{
+				using (no_grad())
+				{
+					Tensor weight = conv.weight ?? throw new Exception("Where is my weight? (should not reach here)");
+					weight.div_(1.0 - dropout);
+					using Dropout dropout1 = Dropout(dropout, true);
+					dropout1.forward(weight);
+
+				}
+			}
+			return conv;
+		}
+		public static Linear CreateZeroInitializedLinear(int inputs, int outputs, bool bias)
+		{
+			//temptest
+			//return CreateXavierInitializedLinear(inputs, outputs, bias, gain);
+			Linear linear = Linear(inputs, outputs, bias);
+			Tensor w = (linear.weight ?? throw new Exception("No weight found (should not reach here)"));
+			using(no_grad())
+			{
+				w.zero_();
+			}
 			return linear;
 		}
 		public static void EraseReturnAsync<T>(ArrayPool<T> arrayPool, T[] array, int erase) where T : class
@@ -115,21 +202,21 @@ namespace TinyGPT.Core
 				momentum.add_(sign, 1 - beta);
 			}
 		}
-		public static Tensor MixedPrecisionAttention(Tensor query, Tensor key, Tensor value, Tensor? mask = null, bool causal = false)
+		public static Tensor MixedPrecisionAttention(Tensor query, Tensor key, Tensor value, Tensor? mask = null, bool causal = false, double dropout = 0.0)
 		{
 			ScalarType scalarType = query.dtype;
-			if (scalarType == ScalarType.Float64)
+			if (scalarType == ScalarType.Float64 | scalarType == ScalarType.Float32)
 			{
-				return scaled_dot_product_attention(query, key, value, mask, 0, causal);
+				return scaled_dot_product_attention(query, key, value, mask, dropout, causal);
 			}
 			using (NewDisposeScope())
 			{
 				Tensor x;
 				{
-					using Tensor q = query.to(ScalarType.Float64);
-					using Tensor k = key.to(ScalarType.Float64);
-					using Tensor v = value.to(ScalarType.Float64);
-					x = scaled_dot_product_attention(q, k, v, mask, 0, causal);
+					using Tensor q = query.to(ScalarType.Float32);
+					using Tensor k = key.to(ScalarType.Float32);
+					using Tensor v = value.to(ScalarType.Float32);
+					x = scaled_dot_product_attention(q, k, v, mask, dropout, causal);
 				}
 				using (x)
 				{
@@ -144,6 +231,13 @@ namespace TinyGPT.Core
 			sizes[2] = outputs;
 			return normal(0, Math.Sqrt(2.0 / (inputs + (outputs * heads))), sizes, scalarType, device, require_grad);
 		}
-
+		public static Tensor GenerateZeroQueryMatrix(int inputs, int outputs, int heads, ScalarType? scalarType = null, Device? device = null, bool require_grad = false)
+		{
+			Span<long> sizes = stackalloc long[3];
+			sizes[0] = heads;
+			sizes[1] = inputs;
+			sizes[2] = outputs;
+			return zeros(sizes, scalarType, device, require_grad);
+		}
 	}
 }

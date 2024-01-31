@@ -205,23 +205,46 @@ namespace TinyGPT.Core
 			Misc.L2RegularizeIMPL(output.weight, lambda);
 		}
 	}
-	public sealed class ResidualSingleKeyAttention : Module<Tensor, Tensor>, IL2Regularizable
+	public sealed class LightweightMultiheadSelfAttention : Module<Tensor, Tensor>, IL2Regularizable
 	{
 		private readonly long normKernelSize;
 		private readonly double epsilon;
 		public override Tensor forward(Tensor input)
 		{
-			return Forward(input, input, null);
+			return Forward(input, 0, null);
 		}
-		public Tensor Forward(Tensor input, Tensor target, Tensor? mask = null)
+		public Tensor Forward(Tensor input, int slice, Tensor? mask = null, double dropout = 0.0)
 		{
 			using (NewDisposeScope())
 			{
 				Tensor x;
-				using (Tensor q = input.matmul(queries), k = keys.forward(target), v = target.matmul(values))
-				{
-					x = Misc.MixedPrecisionAttention(q, k, v, mask, false);
+				using (Tensor z = input.matmul(keys)) {
+					
+					Tensor c;
+					using (Tensor a = z.slice(0, 0, 1, 1))
+					{
+						using Tensor b = z.slice(0, 1, heads, 1);
+						c = cat(new Tensor[] { b, a });
+					}
+					if (slice > 0)
+					{
+						long size = input.size(0);
+						using (Tensor y = c){
+							c = y.slice(1, slice, size, 1);
+						}
+						using (Tensor y = input)
+						{
+							input = y.slice(0, slice, size, 1);
+						}
+					}
+
+					using (c)
+					{
+						x = Misc.MixedPrecisionAttention(c, z, z, mask, false, dropout);
+					}
 				}
+
+				
 				using (Tensor y = x)
 				{
 					x = y.transpose(0, 1);
@@ -234,7 +257,8 @@ namespace TinyGPT.Core
 				{
 					x = exit.forward(y);
 				}
-				using(Tensor y = x, z = input.mul(gate)){
+				using (Tensor y = x, z = input.mul(gate))
+				{
 					x = y.add(z);
 				}
 				using (x)
@@ -248,24 +272,27 @@ namespace TinyGPT.Core
 
 		public void L2Regularize(Scalar lambda)
 		{
-			Misc.L2RegularizeIMPL(exit.weight, lambda);
+			//Misc.L2RegularizeIMPL(queries.weight, lambda);
+			Misc.L2RegularizeIMPL(keys, lambda);
 		}
 
 		private readonly Linear exit;
-		private readonly Parameter queries;
-		private readonly Linear keys;
-		private readonly Parameter values;
+		private readonly Parameter keys;
+		//private readonly Linear queries;
+		//private readonly Parameter values;
 		private readonly Parameter gate;
+		private readonly int heads;
 
-		public ResidualSingleKeyAttention(string name, int inputSize, int keySize, int valueSize, int heads, double epsilon, long normKernelSize) : base(name)
+		public LightweightMultiheadSelfAttention(string name, int inputSize, int keySize, int heads, double epsilon, long normKernelSize) : base(name)
 		{
-			queries = Parameter(Misc.GenerateXavierQueryMatrix(inputSize, keySize, heads));
-			exit = Misc.CreateXavierInitializedLinear(valueSize * heads, inputSize, true);
+			keys = Parameter(Misc.GenerateXavierQueryMatrix(inputSize, keySize, heads));
+			exit = Misc.CreateXavierInitializedLinear(keySize * heads, inputSize, true);
 			gate = Parameter(ones(inputSize));
 			this.normKernelSize = normKernelSize;
 			this.epsilon = epsilon;
-			keys = Misc.CreateKaimingInitializedLinear(inputSize, keySize, false, init.FanInOut.FanIn);
-			values = Parameter(Misc.GenerateXavierQueryMatrix(inputSize, valueSize, heads));
+			this.heads = heads;
+			//queries = Misc.CreateKaimingInitializedLinear(inputSize, keySize, false, init.FanInOut.FanIn);
+			//values = Parameter(Misc.GenerateXavierQueryMatrix(inputSize, valueSize, heads));
 			RegisterComponents();
 		}
 	}
@@ -299,7 +326,7 @@ namespace TinyGPT.Core
 				Tensor y;
 				using (Tensor x = input.forward(hidden))
 				{
-					y = x.tanh();
+					y = x.atan();
 				}
 				if (memory is null)
 				{

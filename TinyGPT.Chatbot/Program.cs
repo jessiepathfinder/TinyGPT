@@ -36,6 +36,9 @@ namespace TinyGPT.Chatbot
 				tokenclasses = Math.Max(val, tokenclasses);
 			}
 
+			Console.WriteLine("Optimizing dictionary...");
+			IReadOnlyDictionary<string, OptimizedTokenizerEntry> optidict = Misc.OptimizeDictionary(dict);
+
 			int magicTokenClasses;
 			Console.WriteLine("Loading model...");
 			bool usecuda = cuda_is_available();
@@ -59,7 +62,7 @@ namespace TinyGPT.Chatbot
 						const int firstTierAttentionDepth = 1;
 						magicTokenClasses = 4;
 						tokenclasses += magicTokenClasses + 1;
-						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, latentTokenSize, attentionHeads, 1e-6, 512, 2, 2);
+						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, attentionHeads, 1e-6, 512, 3, 3);
 						themodel.register_module("current_token_prediction_engine", Linear(latentTokenSize * attentionHeads, latentTokenSize, false));
 						themodel.to(ScalarType.BFloat16);
 
@@ -103,7 +106,7 @@ namespace TinyGPT.Chatbot
 					continue;
 				}
 				Console.Write("TinyGPT: ");
-				int intokens = Transformer.Tokenize(dict, buffer, input, maxtokensize, magicTokenClasses);
+				int intokens = Transformer.Tokenize(optidict, buffer, input, maxtokensize, magicTokenClasses);
 				if (intokens > maxinsize)
 				{
 					Console.WriteLine("too big!");
@@ -125,7 +128,7 @@ namespace TinyGPT.Chatbot
 						for (int z = 0; z < tokenclasses; ++z)
 						{
 							double my = tensor[z].ToScalar().ToDouble();
-							my += (0.2) * Math.Min(i2 - lastRepeat[z], 32);
+							my += (0.1) * Math.Min(i2 - lastRepeat[z], 32);
 							if (my > best)
 							{
 								best = my;

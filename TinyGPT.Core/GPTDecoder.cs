@@ -2,6 +2,7 @@
 using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.Linq;
 using System.Numerics;
 using System.Reflection.Metadata;
@@ -9,6 +10,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 using TorchSharp;
 using TorchSharp.Modules;
 using static TorchSharp.torch;
@@ -45,8 +47,8 @@ namespace TinyGPT.Core
 		private readonly ModuleList<Module<Tensor, Tensor>> convlayers = new ModuleList<Module<Tensor, Tensor>>();
 		private readonly ModuleList<Module> layers = new ModuleList<Module>();
 		private readonly Parameter wordEmbedding;
-		public readonly Linear defaultEngine;
-		private readonly ResidualSingleKeyAttention finalattention;
+		private readonly Linear defaultEngine;
+		private readonly LightweightMultiheadSelfAttention finalattention;
 		private readonly LongTermMemoryResidualComputeLayer finalCompute;
 		private readonly int extraRecurrence;
 
@@ -58,7 +60,10 @@ namespace TinyGPT.Core
 		private readonly int headcount;
 		private readonly int widthMultiplier;
 		private readonly Scalar scale;
-		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int tokenClasses, int coreDepth, double initialFrequency, int attentionKeySize, int attentionValueSize, int widthMultiplier1, double epsilon, int normKernelSize, int extraRecurrence, int convAttentionLayers) : base(name)
+		private readonly Linear decodingModeSelectorGate;
+		private readonly Linear gigaDecoder;
+
+		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int tokenClasses, int coreDepth, double initialFrequency, int attentionValueSize, int widthMultiplier1, double epsilon, int normKernelSize, int extraRecurrence, int convAttentionLayers) : base(name)
 		{
 			if (attentionHeadsCount < 1)
 			{
@@ -68,6 +73,8 @@ namespace TinyGPT.Core
 			int multipliedWidth = latentTokenSize * widthMultiplier1;
 			positionalEncodingWeight = Parameter(randn(multipliedWidth).mul_(initialFrequency));
 			positionalEncodingBias = Parameter(zeros(multipliedWidth));
+			decodingModeSelectorGate = Misc.CreateKaimingInitializedLinear(multipliedWidth, 1, true, init.FanInOut.FanIn);
+			gigaDecoder = Misc.CreateXavierInitializedLinear(multipliedWidth, tokenClasses, true);
 			Span<long> longs = stackalloc long[2];
 			longs[0] = multipliedWidth;
 			longs[1] = latentTokenSize;
@@ -84,12 +91,12 @@ namespace TinyGPT.Core
 
 			for (int i = 0; i < coreDepth; ++i)
 			{
-				layers.Add(new ResidualSingleKeyAttention("", multipliedWidth, attentionKeySize, attentionValueSize, attentionHeadsCount, epsilon, normKernelSize));
+				layers.Add(new LightweightMultiheadSelfAttention("", multipliedWidth, attentionValueSize, attentionHeadsCount, epsilon, normKernelSize));
 				layers.Add(new LongTermMemoryResidualComputeLayer("", multipliedWidth, epsilon, normKernelSize));
 			}
-			finalattention = new ResidualSingleKeyAttention("", multipliedWidth, attentionKeySize, attentionValueSize, attentionHeadsCount, epsilon, normKernelSize);
+			finalattention = new LightweightMultiheadSelfAttention("", multipliedWidth, attentionValueSize, attentionHeadsCount, epsilon, normKernelSize);
 			finalBias = Parameter(zeros(tokenClasses));
-			computeInitialLongTermMemory = Misc.CreateXavierInitializedLinear(multipliedWidth, multipliedWidth, true);
+			computeInitialLongTermMemory = Misc.CreateSparseXavierInitializedLinear(multipliedWidth, multipliedWidth, true, 1);
 
 			//finalBias = Parameter(zeros(1, tokenClasses));
 			wordEmbedding = Parameter(randn(latentTokenSize, tokenClasses));
@@ -99,16 +106,7 @@ namespace TinyGPT.Core
 			RegisterComponents();
 			this.extraRecurrence = extraRecurrence;
 		}
-		public void NormalizeBias()
-		{
-			using(NewDisposeScope()){
-				using(no_grad()){
-					using Tensor sum = finalBias.mean();
-					finalBias.sub_(sum);
-				}
-			}
-		}
-		public Tensor Encode(ReadOnlySpan<ushort> input, int slice)
+		public Tensor Encode(ReadOnlySpan<ushort> input, int slice, double dropout)
 		{
 			int len = input.Length;
 			if (len == 0)
@@ -171,7 +169,7 @@ namespace TinyGPT.Core
 
 
 				LongTermMemoryResidualComputeLayer finalCompute = this.finalCompute;
-				ResidualSingleKeyAttention finalattention = this.finalattention;
+				LightweightMultiheadSelfAttention finalattention = this.finalattention;
 				
 				foreach(Module<Tensor, Tensor> module in convlayers){
 					using Tensor x = y;
@@ -181,18 +179,18 @@ namespace TinyGPT.Core
 
 				//Initial long term memory population can negate certain gradient problems
 				using (Tensor x = computeInitialLongTermMemory.forward(y)){
-					memory = x.tanh();
+					memory = x.atan();
 				}
-				using (Tensor mask = Transformer.CreateCausalAttentionMask(len, len, ScalarType.Float64, wordEmbedding.device))
+				using (Tensor mask = Transformer.CreateCausalAttentionMask(len, len, ScalarType.Float32, wordEmbedding.device))
 				{
-					for(int i = 0, stop = extraRecurrence; i < stop; ++i){
+					for(int i = 0; i < extraRecurrence; ++i){
 						foreach (Module hiddenLayer in layers)
 						{
 							
-							if (hiddenLayer is ResidualSingleKeyAttention multiheadResidualAttention)
+							if (hiddenLayer is LightweightMultiheadSelfAttention multiheadResidualAttention)
 							{
 								using Tensor x = y;
-								y = multiheadResidualAttention.Forward(x, x, mask);
+								y = multiheadResidualAttention.Forward(x, 0, mask);
 							}
 							else if(hiddenLayer is LongTermMemoryResidualComputeLayer longTermMemoryResidualComputeLayer){
 								longTermMemoryResidualComputeLayer.Forward(ref y, ref memory, false);
@@ -204,16 +202,16 @@ namespace TinyGPT.Core
 							}
 						}
 						using (Tensor x = y){
-							y = finalattention.Forward(x, x, mask);
+							y = finalattention.Forward(x, 0, mask);
 						}
 						finalCompute.Forward(ref y, ref memory, false);
 					}
 					foreach (Module hiddenLayer in layers)
 					{
-						if (hiddenLayer is ResidualSingleKeyAttention multiheadResidualAttention)
+						if (hiddenLayer is LightweightMultiheadSelfAttention multiheadResidualAttention)
 						{
 							using Tensor x = y;
-							y = multiheadResidualAttention.Forward(x, x, mask);
+							y = multiheadResidualAttention.Forward(x, 0, mask, dropout);
 						}
 						else if (hiddenLayer is LongTermMemoryResidualComputeLayer longTermMemoryResidualComputeLayer)
 						{
@@ -228,15 +226,15 @@ namespace TinyGPT.Core
 					if (slice == 0)
 					{
 						using Tensor x = y;
-						y = finalattention.Forward(x, x, mask);
+						y = finalattention.Forward(x, 0, mask, dropout);
 					}
 				}
 
 
 				if (slice > 0)
 				{
-					using (Tensor x = y.slice(0, slice, len, 1), x2 = y, mask = Transformer.CreateCausalAttentionMask(len - slice, len, ScalarType.Float64, wordEmbedding.device)){
-						y = finalattention.Forward(x, x2, mask);
+					using (Tensor x2 = y, mask = Transformer.CreateCausalAttentionMask(len - slice, len, ScalarType.Float32, wordEmbedding.device)){
+						y = finalattention.Forward(x2, slice, mask, dropout);
 					}
 					if(memory is { }){
 						using Tensor x = memory;
@@ -266,18 +264,47 @@ namespace TinyGPT.Core
 
 			}
 		}
+		private static readonly Scalar one = 1.0;
+		public Tensor DefaultDecode(Tensor y){
+			using (NewDisposeScope())
+			{
+				Tensor legacy;
+				using(Tensor x = defaultEngine.forward(y)){
+					legacy = Decode(x);
+				}
+				Tensor giga;
+				Tensor gate;
+				using(Tensor x = decodingModeSelectorGate.forward(y)){
+					gate = x.sigmoid();
+				}
+				using(Tensor x = gate){
+					using (Tensor x2 = gigaDecoder.forward(y))
+					{
+						giga = x2.mul(x);
+					}
+					gate = one - gate;
+				}
+				using(Tensor x = legacy){
+					using (gate)
+					{
+						legacy = x.mul(gate);
+					}
+				}
+				using(giga){
+					using (legacy){
+						return giga.add(legacy).MoveToOuterDisposeScope();
+					}
+				}
+
+			}
+		}
 
 		public Tensor Forward(ReadOnlySpan<ushort> input, int slice)
 		{
 			using(NewDisposeScope()){
-				Tensor y;
-				using (Tensor x = Encode(input, slice))
-				{
-					y = defaultEngine.forward(x);
-				}
-				using(y){
-					return Decode(y).MoveToOuterDisposeScope();
-				}
+				using Tensor x = Encode(input, slice, 0.0);
+				return DefaultDecode(x).MoveToOuterDisposeScope();
+
 			}
 		}
 
@@ -296,7 +323,16 @@ namespace TinyGPT.Core
 			//Misc.L2RegularizeIMPL(finalcompress.weight, lambda);
 			finalCompute.L2Regularize(lambda);
 			Misc.L2RegularizeIMPL(computeInitialLongTermMemory.weight, lambda);
+			Misc.L2RegularizeIMPL(decodingModeSelectorGate.weight, lambda);
+			Misc.L2RegularizeIMPL(gigaDecoder.weight, lambda);
 			foreach (Module layer in layers)
+			{
+				if (layer is IL2Regularizable regularizable)
+				{
+					regularizable.L2Regularize(lambda);
+				}
+			}
+			foreach (Module<Tensor, Tensor> layer in convlayers)
 			{
 				if (layer is IL2Regularizable regularizable)
 				{
@@ -306,7 +342,23 @@ namespace TinyGPT.Core
 			//Misc.L2RegularizeIMPL(shortRangeAttnBoost.weight, lambda);
 			//Misc.L2RegularizeIMPL(shortRangeAttnCompress.weight, lambda);
 		}
-		
+		public void L1Regularize(Scalar lambda)
+		{
+			Tensor ? w = gigaDecoder.weight;
+			if(w is null){
+				throw new Exception("gigaDecoder does not have weight (should not reach here)");
+			}
+			Tensor? grad = w.grad();
+			if(grad is null){
+				throw new Exception("Where is my grad?");
+			}
+			using (Tensor x = w.sign()){
+				grad.add(x, lambda);
+			}
+			
+
+		}
+
 	}
 
 
