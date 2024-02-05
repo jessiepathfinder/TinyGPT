@@ -239,5 +239,11 @@ namespace TinyGPT.Core
 			sizes[2] = outputs;
 			return zeros(sizes, scalarType, device, require_grad);
 		}
+		public static IEnumerable<T> JoinEnumerators<T>(IEnumerable<T> enumerator, T append){
+			yield return append;
+			foreach(T t in enumerator){
+				yield return t;
+			}
+		}
 	}
 }

@@ -221,21 +221,26 @@ namespace TinyGPT.Core
 				using (Tensor z = input.matmul(keys)) {
 					
 					Tensor c;
-					using (Tensor a = z.slice(0, 0, 1, 1))
-					{
-						using Tensor b = z.slice(0, 1, heads, 1);
-						c = cat(new Tensor[] { b, a });
-					}
+					
 					if (slice > 0)
 					{
 						long size = input.size(0);
-						using (Tensor y = c){
-							c = y.slice(1, slice, size, 1);
+						input = input.slice(0, slice, size, 1);
+						Tensor a;
+						Tensor b;
+						using(Tensor d = z.slice(1, slice, size, 1)){
+							a = d.slice(0, 0, 1, 1);
+							b = d.slice(0, 1, heads, 1);
 						}
-						using (Tensor y = input)
-						{
-							input = y.slice(0, slice, size, 1);
+						using (a){
+							using(b){
+								c = cat(new Tensor[] { b, a });
+							}
 						}
+					} else{
+						using Tensor a = z.slice(0, 0, 1, 1);
+						using Tensor b = z.slice(0, 1, heads, 1);
+						c = cat(new Tensor[] { b, a });
 					}
 
 					using (c)

@@ -12,7 +12,7 @@ namespace TinyGPT.Core
 {
 	public sealed class AdaBelief
 	{
-		private readonly ReadOnlyMemory<Tensor> parameters;
+		private Memory<Parameter> parameters;
 		private readonly (Tensor,Tensor)[] state;
 
 		private readonly double beta2;
@@ -24,15 +24,14 @@ namespace TinyGPT.Core
 		private readonly Scalar eps;
 
 		private int step;
-		public double learningRate;
 		public AdaBelief(IEnumerable<Parameter> parameters1, double beta1, double beta2, double epsilon){
-			Tensor[] tensors = parameters1.ToArray();
-			parameters = tensors;
+			Parameter[] tensors = parameters1.ToArray();
+			parameters = tensors.AsMemory();
 			int size = tensors.Length;
 			state = new (Tensor, Tensor)[size];
 			for (int i = 0; i < size; ++i) {
-				Tensor param = tensors[i];
-				state[i] = (zeros_like(param, device: CPU), zeros_like(param, device: CPU));
+				Parameter param = tensors[i];
+				state[i] = (zeros_like(param, device: CPU).DetachFromDisposeScope(), zeros_like(param, device: CPU).DetachFromDisposeScope());
 			}
 			//this.decay3 = 1 - beta1;
 			beta1s = beta1;
@@ -42,27 +41,47 @@ namespace TinyGPT.Core
 			this.beta2 = beta2;
 			eps = epsilon;
 		}
+		public void EraseInvalids(){
+			Memory<Parameter> tensors = parameters;
+			Span<Parameter> span = tensors.Span;
+			int ctr = 0;
+			for (int i = 0, size = tensors.Length; i < size; ++i)
+			{
+				Parameter tensor = span[i];
+				if(tensor.IsInvalid){
+					(Tensor a, Tensor b) = state[i];
+					a.Dispose();
+					b.Dispose();
+				} else{
+					int c = ctr++;
+					span[c] = tensor;
+					state[c] = state[i];
+				}
+			}
+			parameters = tensors.Slice(0, ctr);
+
+		}
 		public void zero_grad(){
-			ReadOnlySpan<Tensor> tensors = parameters.Span;
+			ReadOnlySpan<Parameter> tensors = parameters.Span;
 			for (int i = 0, size = tensors.Length; i < size; ++i)
 			{
 				tensors[i].grad()?.zero_();
 			}
 		}
 
-		public void Step(){
+		public void Step(double learningRate){
 			//double stepplusplus = ++step;
 			Scalar bias_correction2 = Math.Sqrt(1 - Math.Pow(beta2, ++step));
 			//Scalar bias_correction = (1 - Math.Pow(beta1, stepplusplus)) / (1 - beta1);
 			double mlr = -learningRate;
 			Scalar step_size = mlr;
 			//Scalar ss2 = mlr * decay3;
-			ReadOnlySpan<Tensor> tensors = parameters.Span;
+			ReadOnlySpan<Parameter> tensors = parameters.Span;
 			using IDisposable disposable = no_grad();
 			for (int i = 0, size = tensors.Length; i < size; ++i){
 
 				ref (Tensor exp_avg, Tensor exp_avg_sq) mystate = ref state[i];
-				Tensor param = tensors[i];
+				Parameter param = tensors[i];
 				Device device = param.device;
 				Tensor grad = (param.grad() ?? throw new Exception("Where is my grad???"));
 

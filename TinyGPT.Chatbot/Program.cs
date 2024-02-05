@@ -62,8 +62,7 @@ namespace TinyGPT.Chatbot
 						const int firstTierAttentionDepth = 1;
 						magicTokenClasses = 4;
 						tokenclasses += magicTokenClasses + 1;
-						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, attentionHeads, 1e-6, 512, 3, 3);
-						themodel.register_module("current_token_prediction_engine", Linear(latentTokenSize * attentionHeads, latentTokenSize, false));
+						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, attentionHeads, 1e-6, 512, 4, 1);
 						themodel.to(ScalarType.BFloat16);
 
 					}
@@ -128,7 +127,7 @@ namespace TinyGPT.Chatbot
 						for (int z = 0; z < tokenclasses; ++z)
 						{
 							double my = tensor[z].ToScalar().ToDouble();
-							my += (0.1) * Math.Min(i2 - lastRepeat[z], 32);
+							//my += (0.05) * Math.Min(i2 - lastRepeat[z], 32);
 							if (my > best)
 							{
 								best = my;
