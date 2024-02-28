@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading.Tasks;
 using TorchSharp;
 using TorchSharp.Modules;
@@ -20,6 +21,16 @@ namespace TinyGPT.Core
 {
 	public static class CustomActivations
 	{
+		private static readonly Scalar one = 1;
+		public static Tensor Tanh2(Tensor input){
+			using(NewDisposeScope()){
+				Tensor x;
+				using(Tensor y = input.mul(input)){
+					x = y.add(one);
+				}
+				return input.div(x).MoveToOuterDisposeScope();
+			}
+		}
 		public static Tensor TanhELU(Tensor input)
 		{
 			using (NewDisposeScope())
@@ -28,7 +39,86 @@ namespace TinyGPT.Core
 				return x.max(input).MoveToOuterDisposeScope();
 			}
 		}
-		public static Tensor KernelNorm(Tensor input, long kernelSize, double epsilon){
+		public static Tensor ArLU(Tensor input)
+		{
+			using (NewDisposeScope())
+			{
+				using Tensor x = input.arctan();
+				return x.max(input).MoveToOuterDisposeScope();
+			}
+		}
+		public static Tensor KernelNorm(Tensor input, long kernelSize, Scalar epsilon){
+			if(input.size(1) == kernelSize){
+				return Norm(input, epsilon);
+			}
+			ScalarType scalarType = input.dtype;
+			if (scalarType == ScalarType.Float64 | scalarType == ScalarType.Float32)
+			{
+				return KernelNormImpl(input, kernelSize, epsilon);	
+			} else{
+				using (NewDisposeScope())
+				{
+					Tensor y;
+					using(Tensor x = input.to(ScalarType.Float32)){
+						y = KernelNormImpl(x, kernelSize, epsilon);
+					}
+					using(y){
+						return y.to(scalarType).MoveToOuterDisposeScope();
+					}
+				}
+			}
+
+		}
+		public static Tensor Norm(Tensor input, Scalar epsilon)
+		{
+			ScalarType scalarType = input.dtype;
+			if (scalarType == ScalarType.Float64 | scalarType == ScalarType.Float32)
+			{
+				return NormImpl(input, epsilon);
+			}
+			else
+			{
+				using (NewDisposeScope())
+				{
+					Tensor y;
+					using (Tensor x = input.to(ScalarType.Float32))
+					{
+						y = NormImpl(x, epsilon);
+					}
+					using (y)
+					{
+						return y.to(scalarType).MoveToOuterDisposeScope();
+					}
+				}
+			}
+
+		}
+		public static Tensor HalfNorm(Tensor input)
+		{
+			ScalarType scalarType = input.dtype;
+			if (scalarType == ScalarType.Float64 | scalarType == ScalarType.Float32)
+			{
+				return HalfNormImpl(input);
+			}
+			else
+			{
+				using (NewDisposeScope())
+				{
+					Tensor y;
+					using (Tensor x = input.to(ScalarType.Float32))
+					{
+						y = HalfNormImpl(x);
+					}
+					using (y)
+					{
+						return y.to(scalarType).MoveToOuterDisposeScope();
+					}
+				}
+			}
+
+		}
+		private static Tensor KernelNormImpl(Tensor input, long kernelSize, Scalar epsilon)
+		{
 			Tensor z;
 			Tensor std;
 			using (NewDisposeScope())
@@ -41,7 +131,7 @@ namespace TinyGPT.Core
 						z = x.sub(mean);
 					}
 				}
-				
+
 				using (Tensor x = std)
 				{
 					std = x.add(epsilon);
@@ -59,30 +149,104 @@ namespace TinyGPT.Core
 				}
 			}
 		}
+		private static Tensor NormImpl(Tensor input, Scalar epsilon){
+			Tensor z;
+			using (NewDisposeScope())
+			{
+				(Tensor std, Tensor mean) = input.std_mean(1, false, true);
+				using (mean)
+				{
+					z = input.sub(mean);
+				}
+				using (Tensor x = std)
+				{
+					std = x.add(epsilon);
+				}
+				using (z){
+					using (std)
+					{
+						return z.div(std).MoveToOuterDisposeScope();
+					}
+				}
+				
+			}
+		}
+		private static Tensor HalfNormImpl(Tensor input)
+		{
+			using (NewDisposeScope())
+			{
+				using Tensor mean = input.sum(1, true);
+				return input.add(mean, (-1.0 / input.size(1))).MoveToOuterDisposeScope();
+			}
+		}
+		public static Tensor LogReLU(Tensor input) {
+			using(NewDisposeScope()){
+				Tensor y;
+				using(Tensor x = input.relu()){
+					y = x.add(one);
+				}
+				using(y){
+					return y.log().MoveToOuterDisposeScope();
+				}
+			}
+		}
+		public static Tensor CausalExponentalAverage(Tensor x, double decay)
+		{
+			int len = (int)x.size(0);
+			Tensor[] tensors = new Tensor[len];
+			Scalar decays = decay;
+			Scalar growth = 1 - decay;
+
+			using (NewDisposeScope())
+			{
+				Tensor? sum = null;
+
+
+
+				for (int i = 0; i < len;)
+				{
+					int oi = i++;
+					using Tensor current = x.slice(0, oi, i, 1);
+					if (sum is null)
+					{
+						sum = current.mul(growth);
+					}
+					else
+					{
+						using (Tensor y = sum.mul(decays))
+						{
+							sum = y.add(current, growth);
+						}
+					}
+					tensors[i] = sum;
+				}
+				return cat(tensors, 0).MoveToOuterDisposeScope();
+			}
+		}
 	}
 	public interface IL2Regularizable
 	{
 		public void L2Regularize(Scalar lambda);
 	}
-	public sealed class ResidualGatedCausalConvolationalLookback : Module<Tensor, Tensor>, IL2Regularizable
+
+	public sealed class ResidualCausalConvolationalLookback : Module<Tensor, Tensor>
 	{
 		private readonly Linear input;
 		private readonly Conv1d output;
-		private readonly Conv1d gate;
-		private readonly long normKernelSize;
-		private readonly double epsilon;
+		private readonly Parameter gate;
+		private readonly Parameter bias;
+		private readonly Scalar epsilon;
 		private readonly int shift;
+		
 		private static readonly Scalar one = 1;
-		public ResidualGatedCausalConvolationalLookback(string name, int size, int compressedSize, int kernelSize, double epsilon, int normKernelSize) : base(name)
+		public ResidualCausalConvolationalLookback(string name, int size, int compressedSize, int kernelSize, double epsilon) : base(name)
 		{
 			input = Misc.CreateKaimingInitializedLinear(size, compressedSize, false, init.FanInOut.FanIn);
-			output = Conv1d(compressedSize, size, kernelSize);
-			gate = Conv1d(compressedSize, size, kernelSize);
+			output = Conv1d(compressedSize, size, kernelSize, bias: false);
+			gate = Parameter(ones(size));
 			shift = (kernelSize) - 1;
-			
-			this.normKernelSize = normKernelSize;
+			bias = Parameter(zeros(size));
 			this.epsilon = epsilon;
-			
 			RegisterComponents();
 		}
 
@@ -99,64 +263,52 @@ namespace TinyGPT.Core
 				{
 					y = pad(x, (shift, 0), PaddingModes.Zeros, 0);
 				}
-				Tensor z;
 				using (Tensor x = y)
 				{
 					y = output.forward(x);
-					z = gate.forward(x);
 				}
-				using(Tensor x = z){
-					z = x.sigmoid();
-				}
-				using(Tensor x = z, x2 = y){
-					y = x2.mul(x);
-					z = one - x;
-				}
-				using(Tensor x = z){
-					z = x.transpose(1, 0);
-				}
+
+
 				using (Tensor x = y)
 				{
 					y = x.transpose(0, 1);
 				}
 				using (Tensor x = y)
 				{
-					Tensor z2;
-					using(z){
-						z2 = input1.mul(z);
-					}
-					using(z2){
-						y = x.add(z2);
-					}
+					y = x.addcmul(input1, gate, one);
+				}
+				using (Tensor x = y)
+				{
+					y = x.add(bias);
 				}
 				using (y)
 				{
-					return CustomActivations.KernelNorm(y, normKernelSize, epsilon).MoveToOuterDisposeScope();
+					return CustomActivations.Norm(y, epsilon).MoveToOuterDisposeScope();
 				}
 			}
 		}
-
-		public void L2Regularize(Scalar lambda)
-		{
-			Misc.L2RegularizeIMPL(input.weight, lambda);
-			Misc.L2RegularizeIMPL(output.weight, lambda);
-			Misc.L2RegularizeIMPL(gate.weight, lambda);
-		}
 	}
-	public sealed class GatedResidualComputeLayer : Module<Tensor, Tensor>, IL2Regularizable
+	public sealed class ResidualComputeLayer : Module<Tensor, Tensor>
 	{
-		private readonly Linear input;
+		private readonly Linear inputs;
 		private readonly Linear output;
-		private readonly Linear gate;
-		private readonly long normKernelSize;
-		private readonly double epsilon;
+		private readonly Parameter gate;
+		private readonly Parameter arluBias;
 		private static readonly Scalar one = 1;
-		public GatedResidualComputeLayer(string name, int size, int coresize, double epsilon, int normKernelSize) : base(name)
+		private readonly long arcore;
+		private readonly Parameter bias;
+		private readonly Scalar epsilon;
+		public ResidualComputeLayer(string name, int size, double epsilon, long arluCoreUnits) : base(name)
 		{
-			input = Misc.CreateXavierInitializedLinear(size, coresize, true);
-			output = Misc.CreateXavierInitializedLinear(coresize, size, true);
-			gate = Misc.CreateXavierInitializedLinear(coresize, size, true);
-			this.normKernelSize = normKernelSize;
+			if(arluCoreUnits < 1 | arluCoreUnits >= size){
+				throw new ArgumentOutOfRangeException(nameof(arluCoreUnits));
+			}
+			arcore = arluCoreUnits;
+			inputs = Misc.CreateXavierInitializedLinear(size, size, false);
+			output = Misc.CreateXavierInitializedLinear(size, size, false);
+			gate = Parameter(ones(size));
+			arluBias = Parameter(ones(arluCoreUnits));
+			bias = Parameter(zeros(size));
 			this.epsilon = epsilon;
 			RegisterComponents();
 		}
@@ -165,50 +317,64 @@ namespace TinyGPT.Core
 		{
 			using (NewDisposeScope())
 			{
+
+				Tensor y1;
+				Tensor y2;
+				using (Tensor x = inputs.forward(input1)){
+					long my2 = arcore;
+					y1 = x.slice(1, 0, my2, 1);
+					y2 = x.slice(1, my2, input1.size(1), 1);
+				}
+
+				using (Tensor x = y1)
+				{
+					y1 = x.add(arluBias);
+				}
+				using (Tensor x = y1)
+				{
+					y1 = CustomActivations.ArLU(x);
+				}
+
+
+				using (Tensor x = y2)
+				{
+					y2 = CustomActivations.HalfNorm(x);
+				}
+				using (Tensor x = y2)
+				{
+					y2 = x.arctan();
+				}
+
 				Tensor y;
-				using (Tensor x = input.forward(input1))
-				{
-					y = CustomActivations.TanhELU(x);
-				}
-				Tensor z;
-				using(Tensor x = y){
-					y = output.forward(x);
-					z = gate.forward(x);
-				}
-				using (Tensor x = z, x2 = y)
-				{
-					y = x2.mul(x);
-					z = one - x;
+				using(y1){
+					using(y2){
+						y = cat(new Tensor[] { y1, y2 }, 1);
+					}
 				}
 				using (Tensor x = y){
-					Tensor z2;
-					using (z)
-					{
-						z2 = input1.mul(z);
-					}
-					using (z2)
-					{
-						y = x.add(z2);
-					}
+					y = output.forward(x);
+				}
+
+
+				using (Tensor x = y){
+					y = x.addcmul(input1, gate, one);
+				}
+				using (Tensor x = y)
+				{
+					y = x.add(bias);
 				}
 				using (y)
 				{
-					return CustomActivations.KernelNorm(y, normKernelSize, epsilon).MoveToOuterDisposeScope();
+					return CustomActivations.Norm(y, epsilon).MoveToOuterDisposeScope();
 				}
 			}
-		}
-
-		public void L2Regularize(Scalar lambda)
-		{
-			Misc.L2RegularizeIMPL(gate.weight, lambda);
-			Misc.L2RegularizeIMPL(input.weight, lambda);
-			Misc.L2RegularizeIMPL(output.weight, lambda);
 		}
 	}
 	public sealed class LightweightMultiheadSelfAttention : Module<Tensor, Tensor>, IL2Regularizable
 	{
-		private readonly long normKernelSize;
-		private readonly double epsilon;
+		private static readonly Scalar one = 1;
+		private readonly Parameter bias;
+		private readonly Scalar epsilon;
 		public override Tensor forward(Tensor input)
 		{
 			return Forward(input, 0, null);
@@ -228,19 +394,19 @@ namespace TinyGPT.Core
 						input = input.slice(0, slice, size, 1);
 						Tensor a;
 						Tensor b;
-						using(Tensor d = z.slice(1, slice, size, 1)){
-							a = d.slice(0, 0, 1, 1);
-							b = d.slice(0, 1, heads, 1);
+						using(Tensor d = z.slice(2, slice, size, 1)){
+							a = d.slice(1, 0, 1, 1);
+							b = d.slice(1, 1, heads, 1);
 						}
 						using (a){
 							using(b){
-								c = cat(new Tensor[] { b, a });
+								c = cat(new Tensor[] { b, a }, 1);
 							}
 						}
 					} else{
-						using Tensor a = z.slice(0, 0, 1, 1);
-						using Tensor b = z.slice(0, 1, heads, 1);
-						c = cat(new Tensor[] { b, a });
+						using Tensor a = z.slice(1, 0, 1, 1);
+						using Tensor b = z.slice(1, 1, heads, 1);
+						c = cat(new Tensor[] { b, a }, 1);
 					}
 
 					using (c)
@@ -249,7 +415,10 @@ namespace TinyGPT.Core
 					}
 				}
 
-				
+				using (Tensor y = x)
+				{
+					x = y.squeeze(0);
+				}
 				using (Tensor y = x)
 				{
 					x = y.transpose(0, 1);
@@ -262,13 +431,17 @@ namespace TinyGPT.Core
 				{
 					x = exit.forward(y);
 				}
-				using (Tensor y = x, z = input.mul(gate))
+				using (Tensor y = x)
 				{
-					x = y.add(z);
+					x = y.addcmul(input, gate, one);
+				}
+				using (Tensor y = x)
+				{
+					x = y.add(bias);
 				}
 				using (x)
 				{
-					return CustomActivations.KernelNorm(x, normKernelSize, epsilon).MoveToOuterDisposeScope();
+					return CustomActivations.Norm(x, epsilon).MoveToOuterDisposeScope();
 				}
 			}
 
@@ -287,203 +460,21 @@ namespace TinyGPT.Core
 		//private readonly Parameter values;
 		private readonly Parameter gate;
 		private readonly int heads;
-
-		public LightweightMultiheadSelfAttention(string name, int inputSize, int keySize, int heads, double epsilon, long normKernelSize) : base(name)
+		public LightweightMultiheadSelfAttention(string name, int inputSize, int keySize, int heads, double epsilon, double optimizerAssistedNormStrength) : base(name)
 		{
 			keys = Parameter(Misc.GenerateXavierQueryMatrix(inputSize, keySize, heads));
-			exit = Misc.CreateXavierInitializedLinear(keySize * heads, inputSize, true);
+			exit = Misc.CreateXavierInitializedLinear(keySize * heads, inputSize, false);
 			gate = Parameter(ones(inputSize));
-			this.normKernelSize = normKernelSize;
-			this.epsilon = epsilon;
 			this.heads = heads;
+			this.epsilon = epsilon;
+			bias = Parameter(zeros(inputSize));
 			//queries = Misc.CreateKaimingInitializedLinear(inputSize, keySize, false, init.FanInOut.FanIn);
 			//values = Parameter(Misc.GenerateXavierQueryMatrix(inputSize, valueSize, heads));
 			RegisterComponents();
 		}
 	}
-	public sealed class LongTermMemoryResidualComputeLayer : Module, IL2Regularizable
-	{
-		private readonly Linear inputGate;
-		private readonly Linear input;
-		private readonly Linear outputGate;
-		private readonly Linear output;
-		private static readonly Scalar one = 1;
-		private static readonly double gain = 5.0 / 3.0;
-		private readonly double epsilon;
-		private readonly long normKernelSize;
-		public LongTermMemoryResidualComputeLayer(string name, int size, double epsilon, long normKernelSize) : base(name)
-		{
-			inputGate = Misc.CreateXavierInitializedLinear(size, size, true);
-			input = Misc.CreateXavierInitializedLinear(size, size, true);
-			outputGate = Misc.CreateXavierInitializedLinear(size, size, true);
-			output = Misc.CreateXavierInitializedLinear(size, size, true, gain);
-			RegisterComponents();
-			this.epsilon = epsilon;
-			this.normKernelSize = normKernelSize;
-		}
-		public void Forward(ref Tensor hidden, ref Tensor? memory, bool disposemem){
-			using(NewDisposeScope()){
-				Tensor z;
-				using (Tensor x = inputGate.forward(hidden))
-				{
-					z = x.sigmoid();
-				}
-				Tensor y;
-				using (Tensor x = input.forward(hidden))
-				{
-					y = x.atan();
-				}
-				if (memory is null)
-				{
-					using (z)
-					{
-						using (y)
-						{
-							memory = y.mul(z);
-						}
-					}
-				}
-				else
-				{
-					using (Tensor x = y)
-					{
-						y = x.mul(z);
-					}
-					using (Tensor x = z)
-					{
-						z = one - x;
-					}
-					using (Tensor x = memory)
-					{
-						using (z)
-						{
-							memory = memory.mul(z);
-						}
-					}
-					using (Tensor x = memory)
-					{
-						using (y)
-						{
-							memory = memory.add(y).MoveToOuterDisposeScope();
-						}
-					}
-				}
-				if (disposemem)
-				{
-					using(memory){
-						z = outputGate.forward(hidden);
-						y = output.forward(memory);
-					}
-					memory = null;
-					using(Tensor x = z){
-						z = x.sigmoid();
-					}
-					using(Tensor x = y){
-						y = x.mul(z);
-					}
-				} else{
-					using (Tensor x = outputGate.forward(hidden))
-					{
-						z = x.sigmoid();
-					}
-					using (Tensor x = output.forward(memory))
-					{
-						y = x.mul(z);
-					}
-				}
-				
-
-				using(Tensor x = z){
-					z = one - x;
-				}
-				using (Tensor x = hidden){
-					using(z){
-						hidden = x.mul(z);
-					}
-				}
-				using (Tensor x = hidden)
-				{
-					using (y)
-					{
-						hidden = x.add(y);
-					}
-				}
-				using (Tensor x = hidden){
-					hidden = CustomActivations.KernelNorm(x, normKernelSize, epsilon).MoveToOuterDisposeScope();
-				}
-				
-			}
-		}
-
-		public void L2Regularize(Scalar lambda)
-		{
-			Misc.L2RegularizeIMPL(input.weight, lambda);
-			Misc.L2RegularizeIMPL(inputGate.weight, lambda);
-			Misc.L2RegularizeIMPL(output.weight, lambda);
-			Misc.L2RegularizeIMPL(outputGate.weight, lambda);
-		}
-	}
-	public sealed class ResidualMultiQueryAttention : Module<Tensor, Tensor>, IL2Regularizable
-	{
-		private readonly long normKernelSize;
-		private readonly double epsilon;
-		public override Tensor forward(Tensor input)
-		{
-			return Forward(input, input, null);
-		}
-		public Tensor Forward(Tensor input, Tensor target, Tensor? mask = null)
-		{
-			using (NewDisposeScope())
-			{
-				Tensor x;
-				using (Tensor q = input.matmul(queries), k = keys.forward(target), v = values.forward(target))
-				{
-					x = Misc.MixedPrecisionAttention(q, k, v, mask, false);
-				}
-				using (Tensor y = x)
-				{
-					x = y.transpose(0, 1);
-				}
-				using (Tensor y = x)
-				{
-					x = y.flatten(1);
-				}
-				using (Tensor y = x)
-				{
-					x = exit.forward(y);
-				}
-				using (x)
-				{
-					return CustomActivations.KernelNorm(x, normKernelSize, epsilon).MoveToOuterDisposeScope();
-				}
-			}
-
-
-		}
-
-		public void L2Regularize(Scalar lambda)
-		{
-			Misc.L2RegularizeIMPL(exit.weight, lambda);
-		}
-
-		private readonly Linear exit;
-		private readonly Parameter queries;
-		private readonly Linear keys;
-		private readonly Linear values;
-
-		public ResidualMultiQueryAttention(string name, int inputSize, int keySize, int valueSize, int heads, double epsilon, long normKernelSize) : base(name)
-		{
-			queries = Parameter(Misc.GenerateXavierQueryMatrix(inputSize, keySize, heads));
-			exit = Misc.CreateXavierInitializedLinear(valueSize * heads, inputSize, true);
-			this.normKernelSize = normKernelSize;
-			this.epsilon = epsilon;
-			keys = Misc.CreateKaimingInitializedLinear(inputSize, keySize, false, init.FanInOut.FanIn);
-			values = Misc.CreateKaimingInitializedLinear(inputSize, valueSize, false, init.FanInOut.FanIn);
-			RegisterComponents();
-		}
-	}
-
-
+	
+	
 
 
 

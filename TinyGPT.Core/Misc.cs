@@ -1,8 +1,10 @@
 ﻿using Google.Protobuf.WellKnownTypes;
+using ICSharpCode.SharpZipLib.BZip2;
 using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -47,7 +49,8 @@ namespace TinyGPT.Core
 			return thedict;
 		}
 		private static readonly NLLLoss nlloss = new NLLLoss(reduction: Reduction.None);
-		public static Tensor FastCrossEntropyLoss(Tensor input, Tensor logits, double squareboost, bool average, Tensor? boost = null) {
+		private static readonly Scalar one = 1;
+		public static Tensor FastCrossEntropyLoss(Tensor input, Tensor logits, double squareboost, bool average, Tensor? boost = null, double gamma = 0.0, bool allow_unsupervised = false) {
 			using(NewDisposeScope()){
 				Tensor z;
 				using(Tensor y = input.exp()){
@@ -57,12 +60,50 @@ namespace TinyGPT.Core
 					z = y.log();
 				}
 				Tensor x;
-				using(Tensor y = nlloss.forward(input, logits))
-				{
-					using(z){
-						x = z.add(y);
+				if(allow_unsupervised){
+					(Tensor v, Tensor i) = input.max(1, true);
+					i.Dispose();
+					using(v){
+						x = cat(new Tensor[] {v, input}, 1);
+					}
+					using(Tensor y = x){
+						x = nlloss.forward(y, logits);
+					}
+					using (Tensor y = x)
+					{
+						using(z){
+							x = z.add(y);
+						}
+					}
+				} else{
+					using (Tensor y = nlloss.forward(input, logits))
+					{
+						using (z)
+						{
+							x = z.add(y);
+						}
 					}
 				}
+				if(gamma > 0.0){
+					Tensor x3;
+					using(Tensor y = x.negative()){
+						x3 = y.exp();
+					}
+					using(Tensor y = x3){
+						x3 = one - y;
+					}
+					if(gamma != 1.0){
+						using Tensor y = x3;
+						x3 = y.pow(gamma);
+					}
+					using(Tensor y = x){
+						using(x3){
+							x = y.mul(x3);
+						}
+					}
+				}
+
+
 				if (squareboost > 0)
 				{
 					using Tensor y = x;
@@ -225,10 +266,11 @@ namespace TinyGPT.Core
 			}
 		}
 		public static Tensor GenerateXavierQueryMatrix(int inputs, int outputs, int heads, ScalarType? scalarType = null, Device? device = null, bool require_grad = false){
-			Span<long> sizes = stackalloc long[3];
-			sizes[0] = heads;
-			sizes[1] = inputs;
-			sizes[2] = outputs;
+			Span<long> sizes = stackalloc long[4];
+			sizes[0] = 1;
+			sizes[1] = heads;
+			sizes[2] = inputs;
+			sizes[3] = outputs;
 			return normal(0, Math.Sqrt(2.0 / (inputs + (outputs * heads))), sizes, scalarType, device, require_grad);
 		}
 		public static Tensor GenerateZeroQueryMatrix(int inputs, int outputs, int heads, ScalarType? scalarType = null, Device? device = null, bool require_grad = false)

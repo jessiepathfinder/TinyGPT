@@ -96,7 +96,7 @@ namespace TinyGPT.Core
 						exp_avg_sq = x.to(device);
 					}
 
-
+					exp_avg.mul_(beta1s).add_(grad, alpha: decay1);
 					exp_avg_sq.mul_(beta2s);
 					//exp_avg_sq.addcmul_(grad, grad, value: decay2);
 					using (Tensor x = exp_avg.sub(grad)){
@@ -104,7 +104,7 @@ namespace TinyGPT.Core
 					}
 
 
-					exp_avg.mul_(beta1s).add_(grad, alpha: decay1);
+					
 					
 
 

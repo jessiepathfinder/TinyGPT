@@ -57,12 +57,12 @@ namespace TinyGPT.Chatbot
 				case "nano-v1":
 					{
 						const int latentTokenSize = 512;
-						maxcontext = 1024;
-						const int attentionHeads = 10;
+						maxcontext = 512;
+						const int attentionHeads = 8;
 						const int firstTierAttentionDepth = 1;
-						magicTokenClasses = 4;
+						magicTokenClasses = 5;
 						tokenclasses += magicTokenClasses + 1;
-						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, attentionHeads, 1e-6, 512, 4, 1);
+						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, attentionHeads, 1e-6, 4, 0.0, 2048);
 						themodel.to(ScalarType.BFloat16);
 
 					}
@@ -72,7 +72,8 @@ namespace TinyGPT.Chatbot
 					return;
 			}
 			themodel.load(datadir + model + ".model");
-			foreach(Parameter parameter in themodel.parameters()){
+			foreach (Parameter parameter in themodel.parameters())
+			{
 				parameter.requires_grad = false;
 			}
 			themodel.eval();
@@ -81,7 +82,7 @@ namespace TinyGPT.Chatbot
 				themodel.to(CUDA);
 			}
 			//4 magic token types
-			
+
 			string[] decode = new string[tokenclasses + 1];
 			int maxtokensize = 0;
 			foreach (KeyValuePair<string, ushort> keyValuePair in dict)
@@ -112,7 +113,7 @@ namespace TinyGPT.Chatbot
 					continue;
 				}
 				buffer[intokens] = 0; //[STARTGPT]
-				int[] lastRepeat = new int[tokenclasses];
+				//int[] lastRepeat = new int[tokenclasses];
 				for (int i = intokens + 1, i2 = 0; i < maxcontext; ++i, ++i2)
 				{
 					double best = double.NegativeInfinity;
@@ -127,7 +128,7 @@ namespace TinyGPT.Chatbot
 						for (int z = 0; z < tokenclasses; ++z)
 						{
 							double my = tensor[z].ToScalar().ToDouble();
-							//my += (0.05) * Math.Min(i2 - lastRepeat[z], 32);
+							//my += (0.1) * Math.Min(i2 - lastRepeat[z], 32);
 							if (my > best)
 							{
 								best = my;
@@ -140,7 +141,7 @@ namespace TinyGPT.Chatbot
 					{
 						break;
 					}
-					lastRepeat[bestindex] = i2;
+					//lastRepeat[bestindex] = i2;
 					buffer[i] = (ushort)bestindex;
 					string? str = decode[bestindex];
 
