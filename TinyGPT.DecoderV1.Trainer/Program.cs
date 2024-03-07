@@ -1,16 +1,8 @@
 ﻿using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using System.Collections.Concurrent;
-using System.ComponentModel;
-using System.ComponentModel.Design;
 using System.IO.Compression;
-using System.Linq.Expressions;
-using System.Runtime.CompilerServices;
-using System.Runtime.ExceptionServices;
-using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Text;
-using System.Xml.Schema;
 using TinyGPT.Core;
 using TorchSharp;
 using TorchSharp.Modules;
@@ -28,22 +20,22 @@ namespace TinyGPT.DecoderV1.Trainer
 
 		//hyperparameters
 		private const int latentTokenSize = 512;
-		private const int maxContextSize = 512;
+		private const int maxContextSize = 1025;
 		private const int trainingBatches = 2000000;
 		private const int targetUnlabeledTokensPerBatch = 1024;
 		private const int targetLabeledTokensPerBatch = 1024;
 		private const int attentionHeads = 8;
 		private const int firstTierAttentionDepth = 1;
 		private const int magicTokenClasses = 5;
-		private const int minimumInputTokens = 5;
+		private const int minimumInputTokens = 3;
 		private const double regularizationTerm = 0.5;
 		private const double firstOccouranceBoost = 1.5;
 		//private const int maxOutputBlockSize = 128;
 		private const byte maskProbability = 24;
 		private const byte randomRemoveProbability = 12;
 		private const byte randomVerbCorruptionProbability = 32;
-		private const int suboptimalSkipInitialTokens = 80;
-		private const int regularizationLookback = 70;
+		private const int suboptimalSkipInitialTokens = 32;
+		private const int regularizationLookback = 8;
 		private const byte unsupervisedLearningRatio = 128;
 		private const int startUnsupervisedTreshold = 512;
 		//private const double costScalingTerm = 1024.0;
@@ -85,7 +77,7 @@ namespace TinyGPT.DecoderV1.Trainer
 				tokenclasses = Math.Max(keyValuePair.Value, tokenclasses);
 			}
 			//5 magic token types
-			//[START_GPT], [END_GPT], [WIKI_SEPERATOR], [MASK], [INVALID_COPY]
+			//[START_GPT], [END_GPT], [WIKI_SEPERATOR], [MASK], [COPY]
 			tokenclasses += magicTokenClasses + 1;
 			int tokenClasses2 = tokenclasses;
 			Console.WriteLine("Optimizing dictionary...");
@@ -139,8 +131,8 @@ namespace TinyGPT.DecoderV1.Trainer
 				{
 					int za = az;
 					StringBuilder sb = new StringBuilder("Tokenized ");
-					Span<ushort> encbuffer = stackalloc ushort[maxContextSize + 2];
-					Span<ushort> encbuffer2 = encbuffer.Slice(2, maxContextSize);
+					Span<ushort> encbuffer = stackalloc ushort[maxContextSize + 1];
+					Span<ushort> encbuffer2 = encbuffer.Slice(1, maxContextSize);
 					int mywqlen = wqlength;
 					int mywikilen = wikilen;
 					//int[] counter = new int[tokenClasses2];
@@ -177,11 +169,10 @@ namespace TinyGPT.DecoderV1.Trainer
 						{
 							continue;
 						}
-						ushort truesize = (ushort)(size1 + 2);
 						int encsize2 = size1 + (suboptimal ? suboptimalSkipInitialTokens : 0);
 
 
-						encbuffer[size1++] = 0; //user-to-GPT context switch
+						encbuffer2[size1++] = 0; //user-to-GPT context switch
 						if (size1 == maxContextSize)
 						{
 							continue;
@@ -198,11 +189,10 @@ namespace TinyGPT.DecoderV1.Trainer
 							encbuffer2[size1++] = 1; //GPT-to-user context switch
 						}
 
-						encbuffer[0] = (ushort)(encsize2 + 2);
-						encbuffer[1] = truesize;
+						encbuffer[0] = (ushort)(encsize2 + 1);
 
 
-						alldata.Enqueue(encbuffer[..(size1 + 2)].ToArray());
+						alldata.Enqueue(encbuffer[..(size1 + 1)].ToArray());
 
 
 						if ((a & 4095) == 4095)
@@ -298,30 +288,28 @@ namespace TinyGPT.DecoderV1.Trainer
 								continue;
 							}
 
-
 							encbuffer2[size1++] = 0; //[START_GPT]
 							if (size1 == maxContextSize)
 							{
 								continue;
 							}
-							int encsize2 = size1;
+							
 							int ctd = Transformer.Tokenize(dict1, encbuffer2[size1..], text.Replace("'''", null).Replace("''", null), maxlen, magicTokenClasses);
 							if (ctd == 0)
 							{
 								continue;
 							}
+							encbuffer[0] = (ushort)(size1 + 1);
 							size1 += ctd;
 							if (size1 < maxContextSize)
 							{
 								encbuffer2[size1++] = 1; //GPT-to-user context switch
 							}
 
-							ushort ssize = (ushort)(encsize2 + 2);
-							encbuffer[0] = ssize;
-							encbuffer[1] = ssize;
+							
 
 
-							alldata.Enqueue(encbuffer[..(size1 + 2)].ToArray());
+							alldata.Enqueue(encbuffer[..(size1 + 1)].ToArray());
 
 
 						}
@@ -352,7 +340,8 @@ namespace TinyGPT.DecoderV1.Trainer
 			backends.cuda.enable_math_sdp(false);
 			backends.cuda.enable_flash_sdp(true);
 			backends.cudnn.allow_tf32 = true;
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.5, latentTokenSize, attentionHeads, 1e-7, 4, 1, 2048);
+			set_default_dtype(ScalarType.BFloat16);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.5, latentTokenSize, attentionHeads, 1e-7, 4, 2048);
 
 			//Dropout dropout = torch.nn.Dropout(0.25);
 
@@ -410,7 +399,6 @@ namespace TinyGPT.DecoderV1.Trainer
 			for (int z = 0; z < trainingBatches; ++z)
 			{
 				Console.WriteLine("Train batch #" + z);
-				bool allowUnsupervised = z > startUnsupervisedTreshold & currentTokenEngine is null;
 				using IDisposable d2 = NewDisposeScope();
 				int totalTokensGenerated = 0;
 				int unlabeledTokensGenerated = 0;
@@ -432,7 +420,7 @@ namespace TinyGPT.DecoderV1.Trainer
 					}
 					else
 					{
-						mode = RandomNumberGenerator.GetInt32(0, 1);
+						mode = RandomNumberGenerator.GetInt32(0, 2);
 					}
 
 					//FAST non-branching mode selector
@@ -440,17 +428,26 @@ namespace TinyGPT.DecoderV1.Trainer
 
 					int lenm1 = example.Length;
 					int split = example[0];
+					
+					Dictionary<ushort, bool> blacklist = new Dictionary<ushort, bool>();
+					int newsplit = Transformer.MaskOrRamdomRemove(example.AsSpan(1, split - 1), masked, maskProbability, randomRemoveProbability, 3, blacklist);
 					Dictionary<ushort, bool> boostdict = new Dictionary<ushort, bool>();
-					int truestart = example[1];
-					while(truestart < split){
-						boostdict.TryAdd(example[truestart++], false);
+					int truestart = 0;
+					while (masked[truestart++] != 0)
+					{
+						
+					}
+					while(truestart < newsplit){
+						boostdict.TryAdd(masked[truestart++], false);
 					}
 
 					long[] cputarget2 = new long[lenm1 - split];
 					double[] boostvector = new double[lenm1 - split];
 
 
-					if(allowUnsupervised){
+					bool allowUnsupervised = z > startUnsupervisedTreshold;
+					if (allowUnsupervised)
+					{
 						for (int copy = split, c2 = 0; copy < lenm1; ++c2)
 						{
 							ushort data = example[copy++];
@@ -488,217 +485,15 @@ namespace TinyGPT.DecoderV1.Trainer
 							boostvector[c2] = (boostdict.TryAdd(data, false) ? firstOccouranceBoost : 1.0);
 						}
 					}
-					split -= 3;
-					lenm1 -= 3;
-					Dictionary<ushort, bool> blacklist = new Dictionary<ushort, bool>();
-					int newsplit = Transformer.MaskOrRamdomRemove(example.AsSpan(2, split), masked, maskProbability, randomRemoveProbability, 3, blacklist);
-					Transformer.Mask(example.AsSpan(2 + split, lenm1 - split), masked[newsplit..], maskProbability, 3, blacklist);
+					split -= 2;
+					lenm1 -= 2;
+					
+					Transformer.Mask(example.AsSpan(1 + split, lenm1 - split), masked[newsplit..], maskProbability, 3, blacklist);
 					lenm1 -= split - newsplit;
+					int copyBegin = lenm1;
 					split = newsplit;
 					
-					for (int copy = 0; copy < lenm1; ++copy)
-					{
-						if(randctr == 2048){
-							RandomNumberGenerator.Fill(rsb);
-							randctr = 0;
-						}
-						if (rsb[randctr++] > randomVerbCorruptionProbability)
-						{
-							continue;
-						}
 
-						ref ushort token = ref masked[copy];
-
-						string? value = tokens[token];
-
-						if (value is null)
-						{
-							continue;
-						}
-						if (value.EndsWith("ing"))
-						{
-							value = value.Substring(0, value.Length - 3);
-							if (dict.TryGetValue(value, out ushort tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "ed", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "s", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "d", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "en", out tkn))
-							{
-								options.Add(tkn);
-							}
-						}
-						else if (value.EndsWith("ed"))
-						{
-							value = value.Substring(0, value.Length - 2);
-							if (dict.TryGetValue(value, out ushort tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "ing", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "s", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "d", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "en", out tkn))
-							{
-								options.Add(tkn);
-							}
-						}
-						else if (value.EndsWith("en"))
-						{
-							value = value.Substring(0, value.Length - 2);
-							if (dict.TryGetValue(value, out ushort tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "ing", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "s", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "d", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "ed", out tkn))
-							{
-								options.Add(tkn);
-							}
-						}
-						else if (value.EndsWith('s'))
-						{
-							value = value.Substring(0, value.Length - 1);
-							if (dict.TryGetValue(value, out ushort tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "ing", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "ed", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "d", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "en", out tkn))
-							{
-								options.Add(tkn);
-							}
-						}
-						else if (value.EndsWith('d'))
-						{
-							value = value.Substring(0, value.Length - 1);
-							if (dict.TryGetValue(value, out ushort tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "ing", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "ed", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "s", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "en", out tkn))
-							{
-								options.Add(tkn);
-							}
-						}
-						else
-						{
-							if (dict.TryGetValue(value + "en", out ushort tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "ing", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "ed", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "d", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "en", out tkn))
-							{
-								options.Add(tkn);
-							}
-						}
-						string val2 = value.ToLower();
-
-						if (val2 == value)
-						{
-							val2 = (value.Length > 1) ? (char.ToUpper(value[0]) + value.Substring(1)) : value.ToUpper();
-						}
-						if (val2 != value)
-						{
-							if (dict.TryGetValue(val2, out ushort tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(val2 + "en", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(val2 + "ing", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(val2 + "ed", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(value + "d", out tkn))
-							{
-								options.Add(tkn);
-							}
-							if (dict.TryGetValue(val2 + "en", out tkn))
-							{
-								options.Add(tkn);
-							}
-						}
-						int oc = options.Count;
-						if (oc == 0)
-						{
-							continue;
-						}
-						token = (ushort)(options[oc == 1 ? 0 : RandomNumberGenerator.GetInt32(0, oc)] + magicTokenClasses);
-						options.Clear();
-					}
 					int tokensGenerated = lenm1 - split;
 					
 					
@@ -743,7 +538,8 @@ namespace TinyGPT.DecoderV1.Trainer
 							long[] cputarget = new long[lenm1 - split];
 							for (int copy = split; copy < lenm1; ++copy)
 							{
-								cputarget[copy - split] = masked[copy];
+								int c2 = copy - regularizationLookback;
+								cputarget[copy - split] = c2 < 0 ? 4 : masked[copy];
 							}
 							using (Tensor y = encoded)
 							{

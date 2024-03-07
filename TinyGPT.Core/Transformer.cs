@@ -209,6 +209,46 @@ namespace TinyGPT.Core
 			}
 			return p2;
 		}
+		public static int RamdomRemove(ReadOnlySpan<ushort> tokens, Span<ushort> outputs, byte randomRemoveProbability, Dictionary<ushort, bool>? state)
+		{
+			int len = tokens.Length;
+			if (outputs.Length < len)
+			{
+				throw new IndexOutOfRangeException(nameof(outputs));
+			}
+			int randsegment = Math.Min(len, 1024);
+
+			Span<byte> actions = stackalloc byte[randsegment];
+
+
+			if (state is null)
+			{
+				state = new Dictionary<ushort, bool>();
+			}
+			int p2 = 0;
+			for (int i = 0; i < len; ++i)
+			{
+				int imod = i % 1024;
+				if (imod == 0)
+				{
+					int remains = len - i;
+					RandomNumberGenerator.Fill(remains < randsegment ? actions[..remains] : actions);
+				}
+				ushort current = tokens[i];
+				if (!state.TryAdd(current, false))
+				{
+					byte action = actions[imod];
+					if (action <= randomRemoveProbability)
+					{
+						//skip token
+						continue;
+					}
+				}
+
+				outputs[p2++] = current;
+			}
+			return p2;
+		}
 
 		private static readonly long[] shape1 = { -1 };
 		private static readonly long[] shape2 = { 1, -1 };

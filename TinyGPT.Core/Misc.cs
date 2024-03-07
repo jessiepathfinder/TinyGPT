@@ -153,6 +153,17 @@ namespace TinyGPT.Core
 			init.kaiming_normal_(linear.weight ?? throw new Exception("No weight found (should not reach here)"), gain, fanmode);
 			return linear;
 		}
+		public static Linear CreateManualKaimingInitializedLinear(int inputs, int outputs, bool bias, int fansize, double gain = 1.0)
+		{
+			//temptest
+			//return CreateXavierInitializedLinear(inputs, outputs, bias, gain);
+			Linear linear = Linear(inputs, outputs, bias);
+			Tensor w = linear.weight ?? throw new Exception("No weight found (should not reach here)");
+			using (no_grad()){
+				w.normal_(0.0, gain / Math.Sqrt(fansize));
+			}
+			return linear;
+		}
 		public static Linear CreateSparseKaimingInitializedLinear(int inputs, int outputs, bool bias, init.FanInOut fanmode, double gain = 1.0, double dropout = 0.5)
 		{
 			Linear linear = Linear(inputs, outputs, bias);
@@ -265,13 +276,13 @@ namespace TinyGPT.Core
 				}
 			}
 		}
-		public static Tensor GenerateXavierQueryMatrix(int inputs, int outputs, int heads, ScalarType? scalarType = null, Device? device = null, bool require_grad = false){
+		public static Tensor GenerateKaimingQueryMatrix(int inputs, int outputs, int heads, ScalarType? scalarType = null, Device? device = null, bool require_grad = false){
 			Span<long> sizes = stackalloc long[4];
 			sizes[0] = 1;
 			sizes[1] = heads;
 			sizes[2] = inputs;
 			sizes[3] = outputs;
-			return normal(0, Math.Sqrt(2.0 / (inputs + (outputs * heads))), sizes, scalarType, device, require_grad);
+			return normal(0, 1.0 / Math.Sqrt(inputs), sizes, scalarType, device, require_grad);
 		}
 		public static Tensor GenerateZeroQueryMatrix(int inputs, int outputs, int heads, ScalarType? scalarType = null, Device? device = null, bool require_grad = false)
 		{

@@ -62,7 +62,7 @@ namespace TinyGPT.Chatbot
 						const int firstTierAttentionDepth = 1;
 						magicTokenClasses = 5;
 						tokenclasses += magicTokenClasses + 1;
-						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, attentionHeads, 1e-6, 4, 0.0, 2048);
+						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.25, latentTokenSize, attentionHeads, 1e-6, 4, 2048);
 						themodel.to(ScalarType.BFloat16);
 
 					}
@@ -113,7 +113,7 @@ namespace TinyGPT.Chatbot
 					continue;
 				}
 				buffer[intokens] = 0; //[STARTGPT]
-				//int[] lastRepeat = new int[tokenclasses];
+									  //int[] lastRepeat = new int[tokenclasses];
 				for (int i = intokens + 1, i2 = 0; i < maxcontext; ++i, ++i2)
 				{
 					double best = double.NegativeInfinity;

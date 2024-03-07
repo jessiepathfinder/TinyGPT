@@ -7,7 +7,7 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.Core", "TinyGPT.Cor
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.DecoderV1.Trainer", "TinyGPT.DecoderV1.Trainer\TinyGPT.DecoderV1.Trainer.csproj", "{EAA4F7F3-37C9-42CE-902C-700225F63FCD}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TinyGPT.Chatbot", "TinyGPT.Chatbot\TinyGPT.Chatbot.csproj", "{1EECBA9A-018D-4833-B1B0-B7D546F54214}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.Chatbot", "TinyGPT.Chatbot\TinyGPT.Chatbot.csproj", "{1EECBA9A-018D-4833-B1B0-B7D546F54214}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
