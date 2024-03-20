@@ -177,7 +177,7 @@ namespace TinyGPT.Core
 			using (NewDisposeScope())
 			{
 				using Tensor mean = input.sum(-1, true);
-				return input.add(mean, (-1.0 / input.size(1))).MoveToOuterDisposeScope();
+				return input.add(mean, (-1.0 / input.size(-1))).MoveToOuterDisposeScope();
 			}
 		}
 		public static Tensor LogReLU(Tensor input) {
@@ -328,7 +328,7 @@ namespace TinyGPT.Core
 
 				using (Tensor x = y1)
 				{
-					y1 = CustomActivations.ArLU(x);
+					y1 = x.gelu();
 				}
 
 
@@ -384,9 +384,9 @@ namespace TinyGPT.Core
 					Tensor query;
 					if(doslice){
 						using Tensor y = input.slice(0, slice, end, 1);
-						query = MM2(y,queries);
+						query = y.matmul(queries);
 					} else{
-						query = MM2(input, queries);
+						query = input.matmul(queries);
 					}
 					using(query)
 					{
@@ -467,7 +467,7 @@ namespace TinyGPT.Core
 
 		private Tensor MM3(Tensor x, Tensor y){
 			int mh = heads;
-			Tensor c = MM2(x, y);
+			Tensor c = x.matmul(y);
 			if (mh == 0){
 				return c;
 			} else{
@@ -481,10 +481,7 @@ namespace TinyGPT.Core
 				}
 			}
 		}
-		private static Tensor MM2(Tensor x, Tensor y){
-			using Tensor z = x.matmul(y);
-			return CustomActivations.HalfNorm(z);
-		}
+
 	}
 
 	public sealed class TinyRNN : Module<Tensor, Tensor>

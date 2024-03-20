@@ -26,16 +26,16 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int targetLabeledTokensPerBatch = 1024;
 		private const int attentionHeads = 8;
 		private const int firstTierAttentionDepth = 1;
-		private const int magicTokenClasses = 5;
+		private const int magicTokenClasses = 4;
 		private const int minimumInputTokens = 3;
 		private const double regularizationTerm = 0.5;
 		private const double firstOccouranceBoost = 1.5;
 		//private const int maxOutputBlockSize = 128;
-		private const byte maskProbability = 24;
-		private const byte randomRemoveProbability = 12;
+		private const byte maskProbability = 32;
+		private const byte randomRemoveProbability = 16;
 		private const byte randomVerbCorruptionProbability = 32;
 		private const int suboptimalSkipInitialTokens = 32;
-		private const int regularizationLookback = 8;
+		private const int regularizationLookback = 0;
 		private const byte unsupervisedLearningRatio = 128;
 		private const int startUnsupervisedTreshold = 512;
 		//private const double costScalingTerm = 1024.0;
@@ -169,10 +169,11 @@ namespace TinyGPT.DecoderV1.Trainer
 						{
 							continue;
 						}
-						int encsize2 = size1 + (suboptimal ? suboptimalSkipInitialTokens : 0);
+						
 
 
 						encbuffer2[size1++] = 0; //user-to-GPT context switch
+						int encsize2 = size1 + (suboptimal ? suboptimalSkipInitialTokens : 0);
 						if (size1 == maxContextSize)
 						{
 							continue;
@@ -341,7 +342,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			backends.cuda.enable_flash_sdp(true);
 			backends.cudnn.allow_tf32 = true;
 			set_default_dtype(ScalarType.BFloat16);
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.5, latentTokenSize, attentionHeads, 1e-7, 4, 2048);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.5, latentTokenSize, attentionHeads, 1e-7, 2048,1,2048);
 
 			//Dropout dropout = torch.nn.Dropout(0.25);
 
@@ -596,7 +597,7 @@ namespace TinyGPT.DecoderV1.Trainer
 					adaptiveLearningRate = alr2;
 				}
 
-				if (currentTokenEngine is { } && totalLosses < 16.5)
+				if (currentTokenEngine is { } && totalLosses < 13.0)
 				{
 					Console.WriteLine("Activating terminal mode...");
 					currentTokenEngine.Dispose();
