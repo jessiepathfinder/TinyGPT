@@ -53,14 +53,13 @@ namespace TinyGPT.Core
 		private readonly int widthMultiplier;
 
 
-		private readonly Parameter positionalEncodingBias;
-		private readonly Parameter positionalEncodingWeight;
+		private readonly Tensor positionalEncodingBias;
+		private readonly Tensor positionalEncodingWeight;
 		private readonly Parameter finalBias;
 		private readonly int headcount;
 		private readonly Scalar scale;
 		private readonly Scalar epsilon;
 		private readonly Linear expand;
-		private static readonly Scalar zero = 0;
 
 
 		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int tokenClasses, int coreDepth, double positionalEncodingConstant, int attentionValueSize, int widthMultiplier1, double epsilon, long geluCoreUnits,long rnnDepth, int rnnMemorySize) : base(name)
@@ -80,8 +79,8 @@ namespace TinyGPT.Core
 				positionalEncodingBiases[i] = ((i % 2) * d * double.Pi) / 2.0;
 			}
 
-			positionalEncodingWeight = Parameter(tensor(positionalEncodingWeights));
-			positionalEncodingBias = Parameter(tensor(positionalEncodingBiases));
+			positionalEncodingWeight = tensor(positionalEncodingWeights);
+			positionalEncodingBias = tensor(positionalEncodingBiases);
 			expand = Misc.CreateKaimingInitializedLinear(latentTokenSize, multipliedWidth, true, init.FanInOut.FanIn);
 
 			defaultEngine = Misc.CreateKaimingInitializedLinear(multipliedWidth, latentTokenSize, false, init.FanInOut.FanIn);
@@ -159,7 +158,7 @@ namespace TinyGPT.Core
 					z2 = x.unsqueeze(1);
 				}
 				using (Tensor x = z2){
-					z2 = positionalEncodingBias.addcmul(z2, positionalEncodingWeight, zero);
+					z2 = positionalEncodingBias.addcmul(z2, positionalEncodingWeight, one);
 				}
 				using(Tensor x = z2){
 					z2 = x.sin();

@@ -37,7 +37,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int suboptimalSkipInitialTokens = 32;
 		private const int regularizationLookback = 0;
 		private const byte unsupervisedLearningRatio = 128;
-		private const int startUnsupervisedTreshold = 512;
+		//private const int startUnsupervisedTreshold = 512;
 		//private const double costScalingTerm = 1024.0;
 
 		[JsonObject(MemberSerialization.Fields)]
@@ -326,11 +326,6 @@ namespace TinyGPT.DecoderV1.Trainer
 				thrlist[z] = thread;
 				thread.Start();
 			}
-			string[] tokens = new string[tokenclasses];
-			foreach (KeyValuePair<string, ushort> kvp in dict)
-			{
-				tokens[kvp.Value + magicTokenClasses] = kvp.Key;
-			}
 
 
 
@@ -347,12 +342,8 @@ namespace TinyGPT.DecoderV1.Trainer
 			//Dropout dropout = torch.nn.Dropout(0.25);
 
 			notchatgpt.to(CUDA, ScalarType.BFloat16);
-			Linear? currentTokenEngine = Misc.CreateKaimingInitializedLinear(latentTokenSize * attentionHeads, latentTokenSize, false, nn.init.FanInOut.FanIn);
-			currentTokenEngine.to(CUDA, ScalarType.BFloat16);
 			IEnumerable<Parameter> parameters = notchatgpt.parameters();
-			IEnumerable<Parameter> effectiveParams = Misc.JoinEnumerators(parameters, currentTokenEngine.weight ?? throw new Exception("Current token engine does not have weights (should not reach here)"));
-			AdaBelief adabelief = new AdaBelief(effectiveParams, 0.9, 0.999, 1e-6);
-			List<ushort> options = new List<ushort>();
+			AdaBelief adabelief = new AdaBelief(parameters, 0.9, 0.999, 1e-6);
 			//LRScheduler learningRateScheduler = ExponentialLR(adam, 0.9999, 0, true);
 			Span<byte> rsb = stackalloc byte[2048];
 			int randctr = 0;
@@ -446,45 +437,12 @@ namespace TinyGPT.DecoderV1.Trainer
 					double[] boostvector = new double[lenm1 - split];
 
 
-					bool allowUnsupervised = z > startUnsupervisedTreshold;
-					if (allowUnsupervised)
+					//bool allowUnsupervised = z > startUnsupervisedTreshold;
+					for (int copy = split, c2 = 0; copy < lenm1; ++c2)
 					{
-						for (int copy = split, c2 = 0; copy < lenm1; ++c2)
-						{
-							ushort data = example[copy++];
-							long data1 = data;
-							double efb;
-							if (boostdict.TryAdd(data, false))
-							{
-								efb = firstOccouranceBoost;
-								data1 += 1;
-							}
-							else
-							{
-								efb = 1.0;
-								if (randctr == 2048)
-								{
-									RandomNumberGenerator.Fill(rsb);
-									randctr = 0;
-								}
-								if (rsb[randctr++] > unsupervisedLearningRatio)
-								{
-									data1 += 1;
-								} else{
-									data1 = 0;
-								}
-							}
-
-							cputarget2[c2] = data1;
-							boostvector[c2] = efb;
-						}
-					} else{
-						for (int copy = split, c2 = 0; copy < lenm1; ++c2)
-						{
-							ushort data = example[copy++];
-							cputarget2[c2] = data;
-							boostvector[c2] = (boostdict.TryAdd(data, false) ? firstOccouranceBoost : 1.0);
-						}
+						ushort data = example[copy++];
+						cputarget2[c2] = data;
+						boostvector[c2] = (boostdict.TryAdd(data, false) ? firstOccouranceBoost : 1.0);
 					}
 					split -= 2;
 					lenm1 -= 2;
@@ -511,10 +469,9 @@ namespace TinyGPT.DecoderV1.Trainer
 					using (NewDisposeScope())
 					{
 
-						Tensor encoded = notchatgpt.Encode(masked[..lenm1], split, 0.0);
 
 						Tensor x;
-						using (Tensor y = notchatgpt.DefaultDecode(encoded))
+						using (Tensor y = notchatgpt.Forward(masked[..lenm1], split))
 						{
 							x = y.to(ScalarType.Float32);
 						}
@@ -524,53 +481,11 @@ namespace TinyGPT.DecoderV1.Trainer
 						Tensor loss;
 						using (Tensor y = x, target = tensor(cputarget2, ScalarType.Int64, CUDA), boost = tensor(boostvector, ScalarType.Float32, CUDA))
 						{
-							loss = Misc.FastCrossEntropyLoss(y, target, 0.025, false, boost, 2, allowUnsupervised);
+							loss = Misc.FastCrossEntropyLoss(y, target, 0.025, false, boost, 2, false);
 						}
 
 
 
-
-						if (currentTokenEngine is null)
-						{
-							encoded.Dispose();
-						}
-						else
-						{
-							long[] cputarget = new long[lenm1 - split];
-							for (int copy = split; copy < lenm1; ++copy)
-							{
-								int c2 = copy - regularizationLookback;
-								cputarget[copy - split] = c2 < 0 ? 4 : masked[copy];
-							}
-							using (Tensor y = encoded)
-							{
-								x = currentTokenEngine.forward(y);
-							}
-
-							using (Tensor y = x)
-							{
-								x = notchatgpt.Decode(y);
-							}
-							using (Tensor y = x)
-							{
-								x = y.to(ScalarType.Float64);
-							}
-
-
-
-							using (Tensor y = x, logits = tensor(cputarget, ScalarType.Int64, CUDA))
-							{
-								x = Misc.FastCrossEntropyLoss(y, logits, 0.025, false, null, 2, false);
-							}
-
-							using (Tensor y = loss)
-							{
-								using (x)
-								{
-									loss = y.add(x, regularizationTerm);
-								}
-							}
-						}
 						/*
 						using(Tensor y = loss){
 							loss = y.div(costscale);
@@ -590,24 +505,17 @@ namespace TinyGPT.DecoderV1.Trainer
 
 				Console.WriteLine("Average loss per token: " + totalLosses);
 
-				double alr2 = (adaptiveLearningRate * 0.999) + (totalLosses * 4e-9);
+				double alr2 = (adaptiveLearningRate * 0.999) + (totalLosses * 6e-9);
 				if (alr2 < adaptiveLearningRate)
 				{
 					Console.WriteLine("Setting adaptive learning rate to " + alr2);
 					adaptiveLearningRate = alr2;
 				}
 
-				if (currentTokenEngine is { } && totalLosses < 13.0)
-				{
-					Console.WriteLine("Activating terminal mode...");
-					currentTokenEngine.Dispose();
-					currentTokenEngine = null;
-					effectiveParams = parameters;
-					adabelief.EraseInvalids();
-				}
+
 				Console.WriteLine("Scaling gradients...");
 				Scalar costdiv = totalTokensGenerated;
-				foreach (Parameter parameter in effectiveParams)
+				foreach (Parameter parameter in parameters)
 				{
 					(parameter.grad() ?? throw new Exception("Where is my grad? (should not reach here)")).div_(costdiv);
 				}
