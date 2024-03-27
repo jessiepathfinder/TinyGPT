@@ -77,7 +77,7 @@ namespace TinyGPT.DecoderV1.Trainer
 				tokenclasses = Math.Max(keyValuePair.Value, tokenclasses);
 			}
 			//5 magic token types
-			//[START_GPT], [END_GPT], [WIKI_SEPERATOR], [MASK], [COPY]
+			//[START_GPT], [END_GPT], [WIKI_SEPERATOR], [MASK]
 			tokenclasses += magicTokenClasses + 1;
 			int tokenClasses2 = tokenclasses;
 			Console.WriteLine("Optimizing dictionary...");
@@ -342,7 +342,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			backends.cuda.enable_flash_sdp(true);
 			backends.cudnn.allow_tf32 = true;
 			set_default_dtype(ScalarType.BFloat16);
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 0.5, latentTokenSize, attentionHeads, 1e-7, 2048,1,2048);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 8192.0, latentTokenSize, attentionHeads, 1e-7, 2048,1,2048);
 
 			//Dropout dropout = torch.nn.Dropout(0.25);
 
