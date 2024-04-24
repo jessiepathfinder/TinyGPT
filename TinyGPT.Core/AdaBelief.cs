@@ -10,10 +10,10 @@ using static TorchSharp.torch.optim;
 
 namespace TinyGPT.Core
 {
-	public sealed class AdaBelief
+	public sealed class AdaBelief : IDisposable
 	{
 		private Memory<Parameter> parameters;
-		private readonly (Tensor,Tensor)[] state;
+		private readonly (Tensor,Tensor,Tensor)[] state;
 
 		private readonly double beta2;
 		//private readonly double decay3;
@@ -28,10 +28,10 @@ namespace TinyGPT.Core
 			Parameter[] tensors = parameters1.ToArray();
 			parameters = tensors.AsMemory();
 			int size = tensors.Length;
-			state = new (Tensor, Tensor)[size];
+			state = new (Tensor, Tensor,Tensor)[size];
 			for (int i = 0; i < size; ++i) {
 				Parameter param = tensors[i];
-				state[i] = (zeros_like(param, device: CPU).DetachFromDisposeScope(), zeros_like(param, device: CPU).DetachFromDisposeScope());
+				state[i] = (zeros_like(param, device: CPU).DetachFromDisposeScope(), zeros_like(param, device: CPU).DetachFromDisposeScope(), zeros_like(param, device: CPU).DetachFromDisposeScope());
 			}
 			//this.decay3 = 1 - beta1;
 			beta1s = beta1;
@@ -49,9 +49,10 @@ namespace TinyGPT.Core
 			{
 				Parameter tensor = span[i];
 				if(tensor.IsInvalid){
-					(Tensor a, Tensor b) = state[i];
+					(Tensor a, Tensor b,Tensor c) = state[i];
 					a.Dispose();
 					b.Dispose();
+					c.Dispose();
 				} else{
 					int c = ctr++;
 					span[c] = tensor;
@@ -69,18 +70,21 @@ namespace TinyGPT.Core
 			}
 		}
 
-		public void Step(double learningRate){
+		public void Step(double learningRate, double trustRegionSize){
 			//double stepplusplus = ++step;
 			Scalar bias_correction2 = Math.Sqrt(1 - Math.Pow(beta2, ++step));
 			//Scalar bias_correction = (1 - Math.Pow(beta1, stepplusplus)) / (1 - beta1);
 			double mlr = -learningRate;
 			Scalar step_size = mlr;
 			//Scalar ss2 = mlr * decay3;
+			Scalar? trustRegionSize1 = double.IsFinite(trustRegionSize) ? trustRegionSize : 0;
+			Scalar ntrs = -trustRegionSize;
+			Scalar n1 = -1;
 			ReadOnlySpan<Parameter> tensors = parameters.Span;
 			using IDisposable disposable = no_grad();
 			for (int i = 0, size = tensors.Length; i < size; ++i){
 
-				ref (Tensor exp_avg, Tensor exp_avg_sq) mystate = ref state[i];
+				ref (Tensor exp_avg, Tensor exp_avg_sq, Tensor max_exp_avg_sq) mystate = ref state[i];
 				Parameter param = tensors[i];
 				Device device = param.device;
 				Tensor grad = (param.grad() ?? throw new Exception("Where is my grad???"));
@@ -95,7 +99,11 @@ namespace TinyGPT.Core
 					{
 						exp_avg_sq = x.to(device);
 					}
-
+					Tensor max_exp_avg_sq;
+					using (Tensor x = mystate.max_exp_avg_sq)
+					{
+						max_exp_avg_sq = x.to(device);
+					}
 					exp_avg.mul_(beta1s).add_(grad, alpha: decay1);
 					exp_avg_sq.mul_(beta2s);
 					//exp_avg_sq.addcmul_(grad, grad, value: decay2);
@@ -104,17 +112,27 @@ namespace TinyGPT.Core
 					}
 
 
-					
+
+					using(Tensor x = max_exp_avg_sq)
+						max_exp_avg_sq = x.maximum(exp_avg_sq);
 					
 
 
 					
-					using(Tensor x = exp_avg_sq.sqrt()){
+					using(Tensor x = max_exp_avg_sq.sqrt()){
 						x.div_(bias_correction2);
 						x.add_(eps);
 						//Nesterov correctiom
 						//param.addcdiv_(grad, x, value: ss2);
-						param.addcdiv_(exp_avg, x, value: step_size);
+						if (trustRegionSize1 is null){
+							param.addcdiv_(exp_avg, x, value: step_size);
+						} else{
+							x.pow_(n1);
+							x.mul_(exp_avg);
+							x.clamp_(ntrs, trustRegionSize1);
+							param.add_(x, step_size);
+						}
+						
 					}
 
 
@@ -125,7 +143,11 @@ namespace TinyGPT.Core
 					{
 						exp_avg_sq = x.to(CPU);
 					}
-					mystate = (exp_avg.DetachFromDisposeScope(), exp_avg_sq.DetachFromDisposeScope());
+					using (Tensor x = max_exp_avg_sq)
+					{
+						max_exp_avg_sq = x.to(CPU);
+					}
+					mystate = (exp_avg.DetachFromDisposeScope(), exp_avg_sq.DetachFromDisposeScope(), max_exp_avg_sq.DetachFromDisposeScope());
 
 
 				}
@@ -136,5 +158,13 @@ namespace TinyGPT.Core
 			GC.KeepAlive(disposable);
 		}
 
+		public void Dispose()
+		{
+			foreach((Tensor x, Tensor y, Tensor z) in state){
+				x.Dispose();
+				y.Dispose();
+				z.Dispose();
+			}
+		}
 	}
 }

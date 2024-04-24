@@ -76,12 +76,10 @@ namespace TinyGPT.Core
 						}
 					}
 				} else{
-					using (Tensor y = nlloss.forward(input, logits))
+					using Tensor y = nlloss.forward(input, logits);
+					using (z)
 					{
-						using (z)
-						{
-							x = z.add(y);
-						}
+						x = z.add(y);
 					}
 				}
 				if(gamma > 0.0){
@@ -107,8 +105,7 @@ namespace TinyGPT.Core
 				if (squareboost > 0)
 				{
 					using Tensor y = x;
-					using Tensor y2 = x.mul(x);
-					x = y.add(y2, squareboost);
+					x = y.addcmul(x, x, squareboost);
 				}
 				if (boost is { })
 				{
@@ -276,13 +273,19 @@ namespace TinyGPT.Core
 				}
 			}
 		}
-		public static Tensor GenerateKaimingQueryMatrix(int inputs, int outputs, int heads, ScalarType? scalarType = null, Device? device = null, bool require_grad = false){
+		public static IEnumerable<Parameter> GradOnly(IEnumerable<Parameter> parameters){
+			foreach (Parameter parameter in parameters){
+				if (parameter.requires_grad)
+					yield return parameter;
+			}
+		}
+		public static Tensor GenerateKaimingQueryMatrix(int inputs, int outputs, int heads, ScalarType? scalarType = null, Device? device = null, bool require_grad = false, double initial_gain = 1.0){
 			Span<long> sizes = stackalloc long[4];
 			sizes[0] = 1;
 			sizes[1] = heads;
 			sizes[2] = inputs;
 			sizes[3] = outputs;
-			return normal(0, 1.0 / Math.Sqrt(inputs), sizes, scalarType, device, require_grad);
+			return normal(0, initial_gain / Math.Sqrt(inputs), sizes, scalarType, device, require_grad);
 		}
 		public static Tensor GenerateZeroQueryMatrix(int inputs, int outputs, int heads, ScalarType? scalarType = null, Device? device = null, bool require_grad = false)
 		{

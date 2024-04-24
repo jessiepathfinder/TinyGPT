@@ -45,25 +45,31 @@ namespace TinyGPT.Chatbot
 			if (usecuda)
 			{
 				InitializeDeviceType(DeviceType.CUDA);
+				backends.cuda.matmul.allow_tf32 = true;
+				backends.cuda.matmul.allow_fp16_reduced_precision_reduction = false;
+				backends.cuda.enable_math_sdp(false);
+				backends.cuda.enable_flash_sdp(true);
+				backends.cudnn.allow_tf32 = true;
+				
 			}
 			else
 			{
 				Console.WriteLine("WARNING: Your computer does not have a NVIDIA CUDA Graphics Card, or lacks the needed graphics drivers (I will be very slow)");
 			}
+			set_default_dtype(ScalarType.BFloat16);
 			FullGPTDecoderUnit themodel;
 			int maxcontext;
 			switch (model)
 			{
 				case "nano-v1":
 					{
-						const int latentTokenSize = 512;
-						maxcontext = 512;
+						const int latentTokenSize = 2048;
+						maxcontext = 1025;
 						const int attentionHeads = 8;
 						const int firstTierAttentionDepth = 1;
 						magicTokenClasses = 4;
 						tokenclasses += magicTokenClasses + 1;
-						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 8192.0, latentTokenSize, attentionHeads, 1e-6, 2048,1, 2048);
-						themodel.to(ScalarType.BFloat16);
+						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, 10000.0, 256, 1e-6, 1024, 256, 8, 2, 0.02, zeros(tokenclasses, 512), 0.5, 1.0, 1.0, 0.0);
 
 					}
 					break;
@@ -71,6 +77,7 @@ namespace TinyGPT.Chatbot
 					Console.WriteLine("unknown model!");
 					return;
 			}
+			themodel.to(ScalarType.BFloat16);
 			themodel.load(datadir + model + ".model");
 			foreach (Parameter parameter in themodel.parameters())
 			{
@@ -114,6 +121,7 @@ namespace TinyGPT.Chatbot
 				}
 				buffer[intokens] = 0; //[STARTGPT]
 									  //int[] lastRepeat = new int[tokenclasses];
+				//int[] lastRepeat = new int[tokenclasses];
 				for (int i = intokens + 1, i2 = 0; i < maxcontext; ++i, ++i2)
 				{
 					double best = double.NegativeInfinity;
@@ -128,7 +136,7 @@ namespace TinyGPT.Chatbot
 						for (int z = 0; z < tokenclasses; ++z)
 						{
 							double my = tensor[z].ToScalar().ToDouble();
-							//my += (0.1) * Math.Min(i2 - lastRepeat[z], 32);
+							//my -= (1.0) / ((i-buffer[..i].LastIndexOf((ushort)z))+1);
 							if (my > best)
 							{
 								best = my;

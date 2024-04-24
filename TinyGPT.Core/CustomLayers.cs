@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using System.Windows.Markup;
 using TorchSharp;
 using TorchSharp.Modules;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 using static TorchSharp.torch;
 
 using static TorchSharp.torch.nn;
@@ -20,6 +21,18 @@ using Module = TorchSharp.torch.nn.Module;
 
 namespace TinyGPT.Core
 {
+	public sealed class Word2VecStub : Module
+	{
+		public readonly Tensor hiddenWeights;
+		public readonly Tensor wordEmbeddings;
+
+		public Word2VecStub(string name, int latentTokenSize, int tokenClasses) : base(name)
+		{
+			hiddenWeights = zeros(latentTokenSize, latentTokenSize);
+			wordEmbeddings = zeros(tokenClasses, latentTokenSize);
+			RegisterComponents();
+		}
+	}
 	public static class CustomActivations
 	{
 		private static readonly Scalar one = 1;
@@ -230,23 +243,23 @@ namespace TinyGPT.Core
 		public void L2Regularize(Scalar lambda);
 	}
 
-	public sealed class ResidualCausalConvolationalLookback : Module<Tensor, Tensor>
+	public sealed class ResidualCausalConvolationalLookback : Module<Tensor, Tensor>, IL2Regularizable
 	{
 		private readonly Linear input;
 		private readonly Conv1d output;
-		private readonly Parameter gate;
-		private readonly Parameter bias;
 		private readonly Scalar epsilon;
 		private readonly int shift;
 		
 		private static readonly Scalar one = 1;
-		public ResidualCausalConvolationalLookback(string name, int size, int compressedSize, int kernelSize, double epsilon) : base(name)
+		public ResidualCausalConvolationalLookback(string name, int size, int compressedSize, int kernelSize, double epsilon, double init_gain) : base(name)
 		{
-			input = Misc.CreateKaimingInitializedLinear(size, compressedSize, false, init.FanInOut.FanIn);
-			output = Conv1d(compressedSize, size, kernelSize, bias: false);
-			gate = Parameter(ones(size));
+			input = Misc.CreateKaimingInitializedLinear(size, compressedSize, false, init.FanInOut.FanIn, init_gain);
+			output = Conv1d(compressedSize, size, kernelSize, bias: true);
+			Tensor cvw = (output.weight ?? throw new Exception("Conv has no weights (should not reach here)"));
+			using(no_grad()){
+				cvw.normal_(0.0, init_gain / Math.Sqrt(compressedSize * kernelSize));
+			}
 			shift = (kernelSize) - 1;
-			bias = Parameter(zeros(size));
 			this.epsilon = epsilon;
 			RegisterComponents();
 		}
@@ -274,41 +287,34 @@ namespace TinyGPT.Core
 				{
 					y = x.transpose(0, 1);
 				}
-				using (Tensor x = y)
-				{
-					y = x.addcmul(input1, gate, one);
-				}
-				using (Tensor x = y)
-				{
-					y = x.add(bias);
-				}
 				using (y)
 				{
 					return CustomActivations.Norm(y, epsilon).MoveToOuterDisposeScope();
 				}
 			}
 		}
+
+		public void L2Regularize(Scalar lambda)
+		{
+			Misc.L2RegularizeIMPL(input.weight, lambda);
+			Misc.L2RegularizeIMPL(output.weight, lambda);
+		}
 	}
-	public sealed class ResidualComputeLayer : Module<Tensor, Tensor>
+	public sealed class ResiduaComputeLayer : Module<Tensor, Tensor>, IL2Regularizable
 	{
 		private readonly Linear inputs;
 		private readonly Linear output;
-		private readonly Parameter gate;
+		//private readonly Parameter gate;
 		private static readonly Scalar one = 1;
-		private readonly long arcore;
-		private readonly Parameter bias;
 		private readonly Scalar epsilon;
-		public ResidualComputeLayer(string name, int size, double epsilon, long arluCoreUnits) : base(name)
+		private readonly double dropout;
+		public ResiduaComputeLayer(string name, int size, double epsilon, double init_output_gain, double dropout) : base(name)
 		{
-			if(arluCoreUnits < 1 | arluCoreUnits >= size){
-				throw new ArgumentOutOfRangeException(nameof(arluCoreUnits));
-			}
-			arcore = arluCoreUnits;
 			inputs = Misc.CreateXavierInitializedLinear(size, size, true);
-			output = Misc.CreateXavierInitializedLinear(size, size, false);
-			gate = Parameter(ones(size));
-			bias = Parameter(zeros(size));
+			output = Misc.CreateXavierInitializedLinear(size, size, true, init_output_gain);
+			//gate = Parameter(ones(size));
 			this.epsilon = epsilon;
+			this.dropout = dropout;
 			RegisterComponents();
 		}
 
@@ -317,49 +323,33 @@ namespace TinyGPT.Core
 			using (NewDisposeScope())
 			{
 
-				Tensor y1;
-				Tensor y2;
-				using (Tensor x = inputs.forward(input1)){
-					long my2 = arcore;
-					y1 = x.slice(1, 0, my2, 1);
-					y2 = x.slice(1, my2, input1.size(1), 1);
-				}
-
-
-				using (Tensor x = y1)
-				{
-					y1 = x.gelu();
-				}
-
-
-				using (Tensor x = y2)
-				{
-					y2 = x.arctan();
-				}
-
 				Tensor y;
-				using(y1){
-					using(y2){
-						y = cat(new Tensor[] { y1, y2 }, 1);
-					}
+				using (Tensor x = inputs.forward(input1))
+				{
+					y = x.softplus();
 				}
+
+				if(dropout > 0.0) {
+					using Tensor x = y;
+					y = functional.dropout(x, dropout);
+				}
+				
 				using (Tensor x = y){
 					y = output.forward(x);
 				}
-
-
-				using (Tensor x = y){
-					y = x.addcmul(input1, gate, one);
-				}
-				using (Tensor x = y)
-				{
-					y = x.add(bias);
-				}
+				using (Tensor x = y) y = x.add(input1); 
+				
 				using (y)
 				{
 					return CustomActivations.Norm(y, epsilon).MoveToOuterDisposeScope();
 				}
 			}
+		}
+
+		public void L2Regularize(Scalar lambda)
+		{
+			Misc.L2RegularizeIMPL(inputs.weight, lambda);
+			Misc.L2RegularizeIMPL(output.weight, lambda);
 		}
 	}
 	
@@ -410,6 +400,7 @@ namespace TinyGPT.Core
 				{
 					x = exit.forward(y);
 				}
+				/*
 				using (Tensor y = x)
 				{
 					if(doslice ){
@@ -417,6 +408,21 @@ namespace TinyGPT.Core
 						x = y.addcmul(sliced, gate, one);
 					} else{
 						x = y.addcmul(input, gate, one);
+					}
+				}
+				*/
+				
+				
+				using (Tensor y = x)
+				{
+					if (doslice)
+					{
+						using Tensor sliced = input.slice(0, slice, end, 1);
+						x = y.add(sliced);
+					}
+					else
+					{
+						x = y.add(input);
 					}
 				}
 				using (Tensor y = x)
@@ -436,6 +442,8 @@ namespace TinyGPT.Core
 		{
 			Misc.L2RegularizeIMPL(queries, lambda);
 			Misc.L2RegularizeIMPL(keys, lambda);
+			Misc.L2RegularizeIMPL(values, lambda);
+			Misc.L2RegularizeIMPL(exit.weight, lambda);
 		}
 
 		private readonly Linear exit;
@@ -444,9 +452,9 @@ namespace TinyGPT.Core
 		private readonly Parameter values;
 		//private readonly Linear queries;
 		//private readonly Parameter values;
-		private readonly Parameter gate;
+		//private readonly Parameter gate;
 		private readonly int heads;
-		public MultiheadSelfAttention(string name, int inputSize, int keySize, int heads, double epsilon, bool multiQuery) : base(name)
+		public MultiheadSelfAttention(string name, int inputSize, int keySize, int heads, double epsilon, bool multiQuery, double init_gain) : base(name)
 		{
 			int effectiveHeads;
 			if(multiQuery){
@@ -457,9 +465,9 @@ namespace TinyGPT.Core
 			}
 			keys = Parameter(Misc.GenerateKaimingQueryMatrix(inputSize, keySize, effectiveHeads));
 			queries = Parameter(Misc.GenerateKaimingQueryMatrix(inputSize, keySize, heads));
-			values = Parameter(Misc.GenerateKaimingQueryMatrix(inputSize, keySize, effectiveHeads));
-			exit = Misc.CreateXavierInitializedLinear(keySize * heads, inputSize, false);
-			gate = Parameter(ones(inputSize));
+			values = Parameter(Misc.GenerateKaimingQueryMatrix(inputSize, keySize, effectiveHeads, initial_gain: init_gain));
+			exit = Misc.CreateKaimingInitializedLinear(keySize * heads, inputSize, false, init.FanInOut.FanIn,init_gain);
+			//gate = Parameter(ones(inputSize));
 			this.epsilon = epsilon;
 			bias = Parameter(zeros(inputSize));
 			RegisterComponents();
@@ -493,13 +501,20 @@ namespace TinyGPT.Core
 		private readonly Parameter bias;
 		private readonly Scalar epsilon;
 		private static readonly Scalar one = 1.0;
-		public TinyRNN(string name, int size, int coresize, double epsilon) : base(name)
+		public TinyRNN(string name, int size, int coresize, double epsilon, bool zcore) : base(name)
 		{
 			this.epsilon = epsilon;
-			int in2 = size + coresize;
-			input = Misc.CreateManualKaimingInitializedLinear(size, coresize, true, in2, 1);
+			
+			if(zcore){
+				input = Misc.CreateKaimingInitializedLinear(size, coresize, true, init.FanInOut.FanIn);
+				core = Misc.CreateZeroInitializedLinear(size, coresize, false);
+			} else{
+				int in2 = size + coresize;
+				input = Misc.CreateManualKaimingInitializedLinear(size, coresize, true, in2, 1);
+				core = Misc.CreateManualKaimingInitializedLinear(coresize, coresize, false, in2, 1);
+			}
 			output = Misc.CreateXavierInitializedLinear(coresize, size, false, 1);
-			core = Misc.CreateManualKaimingInitializedLinear(coresize, coresize, false, in2, 1);
+			
 			gate = Parameter(ones(size));
 			bias = Parameter(zeros(size));
 			RegisterComponents();
@@ -550,85 +565,10 @@ namespace TinyGPT.Core
 				}
 			}
 		}
-	}
-	public sealed class SkipRNN : Module<Tensor, Tensor>
-	{
-		private readonly Linear input;
-		private readonly Linear core;
-		private readonly int stride;
-		private readonly Linear output;
-		private readonly Parameter gate;
-		private readonly Parameter bias;
-		private readonly Scalar epsilon;
-		private static readonly Scalar one = 1.0;
-		public SkipRNN(string name, int size, int coresize, int stride, double epsilon) : base(name)
-		{
-			int in2 = size + coresize;
-			input = Misc.CreateManualKaimingInitializedLinear(size, coresize, true, in2, 1);
-			output = Misc.CreateXavierInitializedLinear(coresize, size, false, 1);
-			core = Misc.CreateManualKaimingInitializedLinear(coresize, coresize, false, in2, 1);
-			gate = Parameter(ones(size));
-			bias = Parameter(zeros(size));
-			this.stride = stride;
-			RegisterComponents();
-			this.epsilon = epsilon;
-		}
 
-		public override Tensor forward(Tensor input1)
+		public void L2Regularize(Scalar lambda)
 		{
-			long len = input1.size(0);
-			int len1 = (int)len;
-			int stride = this.stride;
-			int len2 = (len1 / stride) + Math.Min(len1 % stride, 1);
-			Tensor[] tensors = new Tensor[len2];
-			Linear core = this.core;
-			using (NewDisposeScope())
-			{
-				Tensor z1;
-				using (NewDisposeScope()){
-					using Tensor x = input.forward(input1);
-					Tensor? state = null;
-					for (int i = 0; i < len2; ++i)
-					{
-						int i2 = i * stride;
-						int len3 = Math.Min(i2 + stride, len1);
-						Tensor z = x.slice(0, i2, len3, 1);
-						len3 -= i2;
-						if (state is { })
-						{
-							if (len3 < stride)
-							{
-								state = state.slice(0, 0, len3, 1);
-							}
-							using Tensor y = z, y1 = core.forward(state);
-							z = y.add(y1);
-
-						}
-						using (z)
-						{
-							state = z.arctan();
-						}
-						tensors[i] = state;
-					}
-					z1 = cat(tensors).MoveToOuterDisposeScope();
-				}
-				using (Tensor x = z1)
-				{
-					z1 = output.forward(x);
-				}
-				using (Tensor x = z1)
-				{
-					z1 = x.addcmul(input1, gate, one);
-				}
-				using (Tensor x = z1)
-				{
-					z1 = x.add(bias);
-				}
-				using (z1)
-				{
-					return CustomActivations.Norm(z1, epsilon).MoveToOuterDisposeScope();
-				}
-			}
+			Misc.L2RegularizeIMPL(core.weight, lambda);
 		}
 	}
 

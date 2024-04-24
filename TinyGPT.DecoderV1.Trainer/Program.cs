@@ -1,6 +1,7 @@
 ﻿using Newtonsoft.Json;
 using System.Collections.Concurrent;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using TinyGPT.Core;
@@ -19,24 +20,28 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 		//hyperparameters
-		private const int latentTokenSize = 512;
+		private const int latentTokenSize = 2048;
 		private const int maxContextSize = 1025;
-		private const int trainingBatches = 2000000;
-		private const int targetUnlabeledTokensPerBatch = 1024;
-		private const int targetLabeledTokensPerBatch = 1024;
+		private const int trainingBatches = 100000;
+		private const int targetUnlabeledTokensPerBatch = 65536;
+		private const int targetLabeledTokensPerBatch = 65536;
 		private const int attentionHeads = 8;
 		private const int firstTierAttentionDepth = 1;
 		private const int magicTokenClasses = 4;
-		private const int minimumInputTokens = 3;
+		private const int minimumInputTokens = 2;
 		private const double regularizationTerm = 0.5;
-		private const double firstOccouranceBoost = 1.5;
+		private const float firstOccouranceBoost = 1.5F;
 		//private const int maxOutputBlockSize = 128;
 		private const byte maskProbability = 32;
 		private const byte randomRemoveProbability = 16;
 		private const byte randomVerbCorruptionProbability = 32;
 		private const int suboptimalSkipInitialTokens = 32;
 		private const int regularizationLookback = 0;
+		private const int startUnsupervisedTreshold = int.MaxValue;
 		private const byte unsupervisedLearningRatio = 128;
+		private const int wordEmbeddingUnlkTreshold = 256;
+		private const int wordEmbeddingRelockTreshold = 512;
+		private const int supplementalWordEmbeddingsSize = 512;
 		//private const int startUnsupervisedTreshold = 512;
 		//private const double costScalingTerm = 1024.0;
 
@@ -120,8 +125,6 @@ namespace TinyGPT.DecoderV1.Trainer
 			int loadprogress = 0;
 			int wikiloadprogress = 0;
 			Thread[] thrlist = new Thread[threads];
-			string progresstail = new StringBuilder("/").Append(wqlen2).Append(" question-answer pairs").ToString();
-			string wikiprogresstail = new StringBuilder("/").Append(wikilen2).Append(" simple english wikipedia articles").ToString();
 
 			
 			for (int z = 0; z < threads; ++z)
@@ -134,6 +137,7 @@ namespace TinyGPT.DecoderV1.Trainer
 					Span<ushort> encbuffer = stackalloc ushort[maxContextSize + 1];
 					Span<ushort> encbuffer2 = encbuffer.Slice(1, maxContextSize);
 					int mywqlen = wqlength;
+					string str1 = "Tokenized {0}/" + mywqlen + " question-answer pairs";
 					int mywikilen = wikilen;
 					//int[] counter = new int[tokenClasses2];
 					//classcounters.Add(counter);
@@ -190,7 +194,7 @@ namespace TinyGPT.DecoderV1.Trainer
 							encbuffer2[size1++] = 1; //GPT-to-user context switch
 						}
 
-						encbuffer[0] = (ushort)(encsize2 + 1);
+						encbuffer[0] = (ushort)(encsize2);
 
 
 						alldata.Enqueue(encbuffer[..(size1 + 1)].ToArray());
@@ -198,8 +202,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 						if ((a & 4095) == 4095)
 						{
-							Console.WriteLine(sb.Append(a).Append(progresstail).ToString());
-							sb.Remove(10, sb.Length - 10);
+							Console.WriteLine(str1, a);
 						}
 
 					}
@@ -215,6 +218,7 @@ namespace TinyGPT.DecoderV1.Trainer
 						barrier3.Dispose();
 						barrier3 = null;
 					}
+					str1 = "Tokenized {0}/" + mywikilen + " simple english wikipedia articles";
 
 					while (true)
 					{
@@ -300,7 +304,7 @@ namespace TinyGPT.DecoderV1.Trainer
 							{
 								continue;
 							}
-							encbuffer[0] = (ushort)(size1 + 1);
+							encbuffer[0] = (ushort)(size1);
 							size1 += ctd;
 							if (size1 < maxContextSize)
 							{
@@ -316,8 +320,7 @@ namespace TinyGPT.DecoderV1.Trainer
 						}
 						if ((a & 4095) == 4095)
 						{
-							Console.WriteLine(sb.Append(a).Append(wikiprogresstail).ToString());
-							sb.Remove(10, sb.Length - 10);
+							Console.WriteLine(str1, a);
 						}
 					}
 				});
@@ -336,21 +339,64 @@ namespace TinyGPT.DecoderV1.Trainer
 			backends.cuda.enable_math_sdp(false);
 			backends.cuda.enable_flash_sdp(true);
 			backends.cudnn.allow_tf32 = true;
+
+			
+			Tensor wordEmbeddings;
+			{
+				byte[]? bytes = new byte[tokenclasses * supplementalWordEmbeddingsSize * 4];
+				using(DeflateStream ds = new DeflateStream(new FileStream(datadir + "word2vecng.bin", FileMode.Open, FileAccess.Read, FileShare.Read, 16777216, FileOptions.SequentialScan), CompressionMode.Decompress)){
+					ds.ReadAtLeast(bytes, bytes.Length);
+				}
+				Span<float> floats = MemoryMarshal.Cast<byte, float>(bytes.AsSpan());
+				float[,]? floats1 = new float[tokenclasses, supplementalWordEmbeddingsSize];
+				for (uint x = 0, z = 0; x < tokenclasses; ++x, z += supplementalWordEmbeddingsSize)
+				{
+					for (uint y = 0; y < supplementalWordEmbeddingsSize; ++y)
+					{
+						floats1[x,y] = floats[(int)(z + y)];
+					}
+				}
+				bytes = null;
+				wordEmbeddings = tensor(floats1, dtype: ScalarType.Float32);
+				floats1 = null;
+
+			}
+			
+			Scalar stk = tokenclasses;
+			//Scalar wordEmbeddingMomentum = 0.9;
+			
+
+
 			set_default_dtype(ScalarType.BFloat16);
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, tokenclasses, firstTierAttentionDepth, 8192.0, latentTokenSize, attentionHeads, 1e-7, 2048,1,2048);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, -1.0, 256, 1e-7, 1024, 256, 8, 2, 0.02, wordEmbeddings, 0.5, 1.0, 1.0, 0.5);
+			//Parameter hashedDecoderEngine = nn.Parameter(randn(latentTokenSize, latentTokenSize, ScalarType.BFloat16, CUDA).mul_(1.0 / Math.Sqrt(latentTokenSize)),true);
 
 			//Dropout dropout = torch.nn.Dropout(0.25);
 
 			notchatgpt.to(CUDA, ScalarType.BFloat16);
-			IEnumerable<Parameter> parameters = notchatgpt.parameters();
+			
+			{
+				Tensor wordEmbeddings1 = notchatgpt.supplementalWordEmbedding;
+				(Tensor std, Tensor mean) = wordEmbeddings1.std_mean(false);
+
+				double stdd = std.ToDouble();
+				std.Dispose();
+				wordEmbeddings1.sub_(mean);
+				mean.Dispose();
+				wordEmbeddings1.mul_(0.02 / stdd);
+				
+			}
+			
+
+
+			IEnumerable <Parameter> parameters = notchatgpt.parameters();
 			AdaBelief adabelief = new AdaBelief(parameters, 0.9, 0.999, 1e-6);
 			//LRScheduler learningRateScheduler = ExponentialLR(adam, 0.9999, 0, true);
-			Span<byte> rsb = stackalloc byte[2048];
-			int randctr = 0;
+
 
 
 			notchatgpt.train(true);
-			Span<ushort> masked = stackalloc ushort[maxContextSize];
+			Span<ushort> masked = stackalloc ushort[maxContextSize - 1];
 			//Scalar costscale = costScalingTerm;
 
 
@@ -360,6 +406,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			Queue<string> savequeue = new Queue<string>();
 			long[] shape1 = new long[] { 1, -1 };
+
 
 			Console.WriteLine("Waiting for dataset tokenization to complete...");
 			foreach (Thread thr in thrlist)
@@ -376,6 +423,8 @@ namespace TinyGPT.DecoderV1.Trainer
 			wqlen2 = wikisplit;
 			ushort[][] tokenized = alldata.ToArray();
 
+			
+
 			int alldatasize = tokenized.Length;
 			int wikidatasize = alldatasize - wqlen2;
 
@@ -387,7 +436,6 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 			Console.WriteLine("Start training...");
-			double adaptiveLearningRate = 1e-4;
 			for (int z = 0; z < trainingBatches; ++z)
 			{
 				Console.WriteLine("Train batch #" + z);
@@ -395,9 +443,14 @@ namespace TinyGPT.DecoderV1.Trainer
 				int totalTokensGenerated = 0;
 				int unlabeledTokensGenerated = 0;
 				int labeledTokensGenerated = 0;
-
 				double totalLosses = 0;
-
+				/*
+				if (z == wordEmbeddingUnlkTreshold)
+				{
+					Console.WriteLine("Unlocking word embeddings for training...");
+					word2vec_weights.requires_grad_(true);
+				}
+				*/
 
 				while (labeledTokensGenerated <= targetLabeledTokensPerBatch & unlabeledTokensGenerated <= targetUnlabeledTokensPerBatch)
 				{
@@ -422,36 +475,26 @@ namespace TinyGPT.DecoderV1.Trainer
 					int split = example[0];
 					
 					Dictionary<ushort, bool> blacklist = new Dictionary<ushort, bool>();
-					int newsplit = Transformer.MaskOrRamdomRemove(example.AsSpan(1, split - 1), masked, maskProbability, randomRemoveProbability, 3, blacklist);
-					Dictionary<ushort, bool> boostdict = new Dictionary<ushort, bool>();
-					int truestart = 0;
-					while (masked[truestart++] != 0)
-					{
-						
-					}
-					while(truestart < newsplit){
-						boostdict.TryAdd(masked[truestart++], false);
-					}
+					int newsplit = Transformer.MaskOrRamdomRemove(example.AsSpan(1, split), masked, maskProbability, randomRemoveProbability, 3, blacklist);
+					++split;
 
 					long[] cputarget2 = new long[lenm1 - split];
-					double[] boostvector = new double[lenm1 - split];
+					for (int copy = split, c2 = 0; copy < lenm1; )
+					{
+						cputarget2[c2++] = example[copy++];
+					}
 
 
 					//bool allowUnsupervised = z > startUnsupervisedTreshold;
-					for (int copy = split, c2 = 0; copy < lenm1; ++c2)
-					{
-						ushort data = example[copy++];
-						cputarget2[c2] = data;
-						boostvector[c2] = (boostdict.TryAdd(data, false) ? firstOccouranceBoost : 1.0);
-					}
-					split -= 2;
+
+
+					split -= 1;
 					lenm1 -= 2;
 					
-					Transformer.Mask(example.AsSpan(1 + split, lenm1 - split), masked[newsplit..], maskProbability, 3, blacklist);
-					lenm1 -= split - newsplit;
-					int copyBegin = lenm1;
-					split = newsplit;
-					
+					Transformer.Mask(example.AsSpan(split, (lenm1 - split)), masked[newsplit..], maskProbability, 3, blacklist);
+					lenm1 -= (split - newsplit);
+					split = newsplit - 1;
+
 
 					int tokensGenerated = lenm1 - split;
 					
@@ -469,33 +512,25 @@ namespace TinyGPT.DecoderV1.Trainer
 					using (NewDisposeScope())
 					{
 
-
 						Tensor x;
-						using (Tensor y = notchatgpt.Forward(masked[..lenm1], split))
+						using (Tensor y = notchatgpt.Forward(masked[..lenm1], split, 0.5))
 						{
 							x = y.to(ScalarType.Float32);
 						}
 
 
-
-						Tensor loss;
-						using (Tensor y = x, target = tensor(cputarget2, ScalarType.Int64, CUDA), boost = tensor(boostvector, ScalarType.Float32, CUDA))
+						using (Tensor y = x, target = tensor(cputarget2, ScalarType.Int64, CUDA))
 						{
-							loss = Misc.FastCrossEntropyLoss(y, target, 0.025, false, boost, 2, false);
+							x = Misc.FastCrossEntropyLoss(y, target, 0.025, false, null, 2, false);
 						}
-
-
-
-						/*
-						using(Tensor y = loss){
-							loss = y.div(costscale);
-						}
-						*/
-						using (loss)
+						
+							
+						using (x)
 						{
-							loss.backward();
-							totalLosses += loss.ToDouble();
+							x.backward();
+							totalLosses += x.ToDouble();
 						}
+
 
 					}
 				}
@@ -505,12 +540,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 				Console.WriteLine("Average loss per token: " + totalLosses);
 
-				double alr2 = (adaptiveLearningRate * 0.999) + (totalLosses * 6e-9);
-				if (alr2 < adaptiveLearningRate)
-				{
-					Console.WriteLine("Setting adaptive learning rate to " + alr2);
-					adaptiveLearningRate = alr2;
-				}
+
 
 
 				Console.WriteLine("Scaling gradients...");
@@ -519,18 +549,40 @@ namespace TinyGPT.DecoderV1.Trainer
 				{
 					(parameter.grad() ?? throw new Exception("Where is my grad? (should not reach here)")).div_(costdiv);
 				}
+				
 
-				Console.WriteLine("Applying regularization...");
-				//nn.utils.clip_grad_value_(parameters, 1);
-				notchatgpt.L2Regularize(0.01);
+				
+				
+				if(z < 768)
+				{
+					Console.WriteLine("Applying regularization...");
+					//nn.utils.clip_grad_value_(parameters, 1);
+					notchatgpt.L2Regularize(0.001);
+				}
 				//notchatgpt.L1Regularize(0.1);
-
-
-
-
 				Console.WriteLine("Optimizer step");
-				adabelief.Step(adaptiveLearningRate);
+				adabelief.Step(0.0005, double.PositiveInfinity);
 				adabelief.zero_grad();
+
+				
+
+				
+				
+				/*
+				if(z >= wordEmbeddingUnlkTreshold & z <= wordEmbeddingRelockTreshold){
+					Tensor grad = word2vec_weights.grad() ?? throw new Exception("Where is my grad? (should not reach here)");
+					grad.div_(costdiv);
+					wordEmbeddingOptimizer.Step(adaptiveLearningRate);
+					if (z == wordEmbeddingRelockTreshold){
+						Console.WriteLine("Locking word embeddings...");
+						grad.Dispose();
+						word2vec_weights.requires_grad_(false);
+						wordEmbeddingOptimizer.Dispose();
+					} else{
+						grad.zero_();
+					}
+				}*/
+
 
 				if (z % 128 == 0)
 				{
@@ -545,6 +597,7 @@ namespace TinyGPT.DecoderV1.Trainer
 					}
 
 				}
+
 
 				GC.KeepAlive(d2);
 			}
