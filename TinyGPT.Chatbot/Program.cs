@@ -65,11 +65,11 @@ namespace TinyGPT.Chatbot
 					{
 						const int latentTokenSize = 2048;
 						maxcontext = 1025;
-						const int attentionHeads = 8;
-						const int firstTierAttentionDepth = 1;
+						const int attentionHeads = 16;
+						const int firstTierAttentionDepth = 3;
 						magicTokenClasses = 4;
 						tokenclasses += magicTokenClasses + 1;
-						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, 10000.0, 256, 1e-6, 1024, 256, 8, 2, 0.02, zeros(tokenclasses, 512), 0.5, 1.0, 1.0, 0.0);
+						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, 0.02, 128, 1e-6, 1024, 0.02, 1.0, 1.0, 0.0, tokenclasses, 6, 1.0, 2048, 0);
 
 					}
 					break;

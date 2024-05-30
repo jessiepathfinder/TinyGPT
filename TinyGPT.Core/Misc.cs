@@ -136,6 +136,14 @@ namespace TinyGPT.Core
 			(tensor.grad() ?? throw new Exception("No gradients to regularize")).add_(tensor, lambda);
 
 		}
+		public static void L1RegularizeIMPL(Tensor? tensor, Scalar lambda)
+		{
+
+			if (tensor is null) throw new ArgumentNullException(nameof(tensor));
+			using Tensor x = tensor.sign();
+			(tensor.grad() ?? throw new Exception("No gradients to regularize")).add_(x, lambda);
+
+		}
 		public static Linear CreateXavierInitializedLinear(int inputs, int outputs, bool bias, double gain = 1.0)
 		{
 			Linear linear = Linear(inputs, outputs, bias);
