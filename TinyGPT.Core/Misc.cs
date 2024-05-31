@@ -295,6 +295,24 @@ namespace TinyGPT.Core
 			sizes[3] = outputs;
 			return normal(0, initial_gain / Math.Sqrt(inputs), sizes, scalarType, device, require_grad);
 		}
+		public static Tensor GenerateKaimingXATKeyMatrix(int inputs, int outputs, int heads, ScalarType? scalarType = null, Device? device = null, bool require_grad = false, double initial_gain = 1.0)
+		{
+			Span<long> sizes = stackalloc long[4];
+			sizes[0] = heads;
+			sizes[1] = 1;
+			sizes[2] = inputs;
+			sizes[3] = outputs;
+			return normal(0, initial_gain / Math.Sqrt(inputs), sizes, scalarType, device, require_grad);
+		}
+		public static Tensor GenerateKaimingXATValueMatrix(int inputs, int outputs, int heads, ScalarType? scalarType = null, Device? device = null, bool require_grad = false, double initial_gain = 1.0)
+		{
+			Span<long> sizes = stackalloc long[4];
+			sizes[0] = heads;
+			sizes[1] = heads;
+			sizes[2] = inputs;
+			sizes[3] = outputs;
+			return normal(0, initial_gain / Math.Sqrt(inputs), sizes, scalarType, device, require_grad);
+		}
 		public static Tensor GenerateZeroQueryMatrix(int inputs, int outputs, int heads, ScalarType? scalarType = null, Device? device = null, bool require_grad = false)
 		{
 			Span<long> sizes = stackalloc long[3];

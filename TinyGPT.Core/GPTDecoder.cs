@@ -40,7 +40,7 @@ namespace TinyGPT.Core
 		private readonly MultiheadSelfAttention finalAttention;
 		private readonly ResidualComputeLayer finalCompute;
 
-		private readonly Conv1d convBypass;
+		//private readonly Conv1d convBypass;
 
 
 		private readonly int headcount;
@@ -69,8 +69,8 @@ namespace TinyGPT.Core
 			//this.supplementalWordEmbedding = supplementalWordEmbedding;
 
 			layers.Add(LayerNorm(latentTokenSize, epsilon, false, false));
-			convBypass = Conv1d(latentTokenSize, latentTokenSize, convBypassKernelSize);
-			using (no_grad()) (convBypass.weight ?? throw new Exception("Bypass conv does not have weight (should not reach here)")).normal_(0.0, Math.Sqrt(1.0 / (latentTokenSize * convBypassKernelSize)));
+			//convBypass = Conv1d(latentTokenSize, latentTokenSize, convBypassKernelSize);
+			//using (no_grad()) (convBypass.weight ?? throw new Exception("Bypass conv does not have weight (should not reach here)")).normal_(0.0, Math.Sqrt(1.0 / (latentTokenSize * convBypassKernelSize)));
 
 
 			for (int i = 0; i < rnnAttentionLayers; ++i)
@@ -152,6 +152,17 @@ namespace TinyGPT.Core
 					y = wordEmbedding[z2];
 				}
 
+				using(Tensor x = y) if (len == maxlen2)
+					{
+						y = x.add(staticPositionalEncoding);
+					}
+					else
+					{
+						using Tensor z = staticPositionalEncoding.slice(0, 0, len, 1);
+						y = x.add(z);
+					}
+
+				/*
 				Tensor yconv = y;
 
 				if (len == maxlen2)
@@ -179,7 +190,7 @@ namespace TinyGPT.Core
 				}
 				using (Tensor x = yconv) yconv = convBypass.forward(x);
 				using (Tensor x = yconv) yconv = x.transpose(1, 0);
-
+				*/
 
 				MultiheadSelfAttention finalattention = finalAttention;
 
@@ -208,12 +219,13 @@ namespace TinyGPT.Core
 				}
 				using (Tensor x = y) y = finalCompute.forward(x);
 
+				/*
 				using(yconv){
 					using Tensor x = y;
 					y = x.add(yconv);
 				}
 				using (Tensor x = y) y = CustomActivations.Norm(x, epsilon);
-
+				*/
 				/*
 				if (slice > 0)
 				{
@@ -262,7 +274,7 @@ namespace TinyGPT.Core
 
 		public void L1Regularize(Scalar lambda)
 		{
-			Misc.L1RegularizeIMPL(convBypass.weight, lambda);
+			//Misc.L1RegularizeIMPL(convBypass.weight, lambda);
 			foreach (Module<Tensor, Tensor> module in layers)
 			{
 				if (module is IL1Regularizable regularizable)

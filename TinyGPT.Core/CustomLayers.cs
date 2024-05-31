@@ -368,7 +368,7 @@ namespace TinyGPT.Core
 		}
 	}
 	
-	public sealed class MultiheadSelfAttention : Module<Tensor, Tensor>, IL2Regularizable
+	public sealed class MultiheadSelfAttention : Module<Tensor, Tensor>, IL2Regularizable, ISelfAttention
 	{
 		private static readonly Scalar one = 1;
 		private readonly Parameter bias;
@@ -506,7 +506,150 @@ namespace TinyGPT.Core
 		}
 
 	}
-	public sealed class MultiValueSelfAttention : Module<Tensor, Tensor>, IL2Regularizable, IL1Regularizable
+	public interface ISelfAttention{
+		public Tensor Forward(Tensor input, int slice, Tensor? mask = null, double dropout = 0.0, bool causal = false);
+	}
+
+	//TinyGPT XAT (eXtreme ATtention)
+	public sealed class XATtention : Module<Tensor, Tensor>, IL2Regularizable, ISelfAttention
+	{
+		private static readonly Scalar one = 1;
+		private readonly Parameter bias;
+		private readonly Scalar epsilon;
+		public override Tensor forward(Tensor input)
+		{
+			return Forward(input, 0, null);
+		}
+		public Tensor Forward(Tensor input, int slice, Tensor? mask = null, double dropout = 0.0, bool causal = false)
+		{
+			bool doslice = slice > 0;
+			long end = doslice ? input.size(0) : -1;
+			using (NewDisposeScope())
+			{
+				Tensor x;
+				using (Tensor key = MM3(input, keys))
+				{
+					using Tensor value = input.matmul(values);
+					Tensor query;
+					if (doslice)
+					{
+						using Tensor y = input.slice(0, slice, end, 1);
+						query = MM3(y, queries);
+					}
+					else
+					{
+						query = MM3(input, queries);
+					}
+					using (query)
+					{
+						x = Misc.MixedPrecisionAttention(query, key, value, mask, causal, dropout);
+					}
+				}
+
+				using (Tensor y = x)
+				{
+					x = y.flatten(0, 1);
+				}
+				using (Tensor y = x)
+				{
+					x = y.transpose(0, 1);
+				}
+				using (Tensor y = x)
+				{
+					x = y.flatten(1);
+				}
+				using (Tensor y = x)
+				{
+					x = exit.forward(y);
+				}
+				/*
+				using (Tensor y = x)
+				{
+					if(doslice ){
+						using Tensor sliced = input.slice(0, slice, end, 1);
+						x = y.addcmul(sliced, gate, one);
+					} else{
+						x = y.addcmul(input, gate, one);
+					}
+				}
+				*/
+
+
+				using (Tensor y = x)
+				{
+					if (doslice)
+					{
+						using Tensor sliced = input.slice(0, slice, end, 1);
+						x = y.add(sliced);
+					}
+					else
+					{
+						x = y.add(input);
+					}
+				}
+				using (Tensor y = x)
+				{
+					x = y.add(bias);
+				}
+				using (x)
+				{
+					return CustomActivations.Norm(x, epsilon).MoveToOuterDisposeScope();
+				}
+			}
+
+
+		}
+
+		public void L2Regularize(Scalar lambda)
+		{
+			Misc.L2RegularizeIMPL(queries, lambda);
+			Misc.L2RegularizeIMPL(keys, lambda);
+			Misc.L2RegularizeIMPL(values, lambda);
+			Misc.L2RegularizeIMPL(exit.weight, lambda);
+		}
+
+		private readonly Linear exit;
+		private readonly Parameter keys;
+		private readonly Parameter queries;
+		private readonly Parameter values;
+		private readonly long heads;
+		public XATtention(string name, int inputSize, int keySize, int heads, double epsilon, double init_gain, int valueSize) : base(name)
+		{
+
+			keys = Parameter(Misc.GenerateKaimingXATKeyMatrix(inputSize, keySize, 1));
+			queries = Parameter(Misc.GenerateKaimingQueryMatrix(inputSize, keySize, heads));
+			values = Parameter(Misc.GenerateKaimingXATValueMatrix(inputSize, valueSize, heads, initial_gain: init_gain));
+			exit = Misc.CreateKaimingInitializedLinear(keySize * heads, inputSize, false, init.FanInOut.FanIn, init_gain);
+			//gate = Parameter(ones(inputSize));
+			this.epsilon = epsilon;
+			bias = Parameter(zeros(inputSize));
+			RegisterComponents();
+			this.heads = heads;
+		}
+
+		private Tensor MM3(Tensor x, Tensor y)
+		{
+			Tensor c = x.matmul(y);
+
+			long heads = this.heads;
+			if(heads == 1){
+				return c;
+			}
+
+			Span<long> span = stackalloc long[4];
+			span[0] = heads;
+			span[1] = heads;
+			span[2] = c.size(2);
+			span[3] = c.size(3);
+			using (c)
+			{
+				return c.expand(span);
+			}
+		}
+
+		
+	}
+	public sealed class MultiValueSelfAttention : Module<Tensor, Tensor>, IL2Regularizable, ISelfAttention
 	{
 		private static readonly Scalar one = 1;
 		private readonly Parameter bias;
@@ -600,7 +743,8 @@ namespace TinyGPT.Core
 			Misc.L2RegularizeIMPL(queries, lambda);
 			Misc.L2RegularizeIMPL(keys, lambda);
 			Misc.L2RegularizeIMPL(values, lambda);
-			
+			Misc.L2RegularizeIMPL(exit.weight, lambda);
+
 		}
 
 		private readonly Linear exit;
@@ -627,7 +771,8 @@ namespace TinyGPT.Core
 			Tensor c = x.matmul(y);
 
 			long heads = this.heads;
-			if(heads == 1){
+			if (heads == 1)
+			{
 				return c;
 			}
 
@@ -640,11 +785,6 @@ namespace TinyGPT.Core
 			{
 				return c.expand(span);
 			}
-		}
-
-		public void L1Regularize(Scalar lambda)
-		{
-			Misc.L1RegularizeIMPL(exit.weight, lambda);
 		}
 	}
 

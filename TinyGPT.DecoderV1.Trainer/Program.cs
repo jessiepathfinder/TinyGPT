@@ -26,7 +26,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int targetUnlabeledTokensPerBatch = 65536;
 		private const int targetLabeledTokensPerBatch = 65536;
 		private const int attentionHeads = 16;
-		private const int firstTierAttentionDepth = 3;
+		private const int firstTierAttentionDepth = 5;
 		private const int magicTokenClasses = 4;
 		private const int minimumInputTokens = 2;
 		private const double regularizationTerm = 0.5;
@@ -595,7 +595,7 @@ namespace TinyGPT.DecoderV1.Trainer
 				adabelief.zero_grad();
 
 				alr *= 0.999;
-				alr += 1e-8;
+				alr += 25e-9;
 				Console.WriteLine("Set learning rate to " + alr);
 
 
