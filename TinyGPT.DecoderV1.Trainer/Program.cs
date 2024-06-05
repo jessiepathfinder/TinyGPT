@@ -26,7 +26,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int targetUnlabeledTokensPerBatch = 65536;
 		private const int targetLabeledTokensPerBatch = 65536;
 		private const int attentionHeads = 16;
-		private const int firstTierAttentionDepth = 5;
+		private const int firstTierAttentionDepth = 4;
 		private const int magicTokenClasses = 4;
 		private const int minimumInputTokens = 2;
 		private const double regularizationTerm = 0.5;
@@ -343,35 +343,13 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			set_default_dtype(ScalarType.BFloat16);
 
-			/*
-			Tensor wordEmbeddings;
-			{
-				byte[]? bytes = new byte[tokenclasses * supplementalWordEmbeddingsSize * 4];
-				using(DeflateStream ds = new DeflateStream(new FileStream(datadir + "word2vecng.bin", FileMode.Open, FileAccess.Read, FileShare.Read, 16777216, FileOptions.SequentialScan), CompressionMode.Decompress)){
-					ds.ReadAtLeast(bytes, bytes.Length);
-				}
-				Span<float> floats = MemoryMarshal.Cast<byte, float>(bytes.AsSpan());
-				float[,]? floats1 = new float[tokenclasses, supplementalWordEmbeddingsSize];
-				for (uint x = 0, z = 0; x < tokenclasses; ++x, z += supplementalWordEmbeddingsSize)
-				{
-					for (uint y = 0; y < supplementalWordEmbeddingsSize; ++y)
-					{
-						floats1[x,y] = floats[(int)(z + y)];
-					}
-				}
-				bytes = null;
-				wordEmbeddings = tensor(floats1, dtype: ScalarType.BFloat16);
-				floats1 = null;
-
-			}
-			*/
 			
 			Scalar stk = tokenclasses;
 			//Scalar wordEmbeddingMomentum = 0.9;
 
 			double initstd = 1.0 / Math.Sqrt(latentTokenSize);
 
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, initstd, 128, 1e-7, 1024, initstd, 1.0, 1.0, 0.0, tokenclasses, 6, 1.0, 2048, 0);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, initstd, 1e-7, 1024, initstd, 1.0, 1.0, 0.125, tokenclasses, 1.0, 6, 128, 0.125, 4);
 			//Parameter hashedDecoderEngine = nn.Parameter(randn(latentTokenSize, latentTokenSize, ScalarType.BFloat16, CUDA).mul_(1.0 / Math.Sqrt(latentTokenSize)),true);
 
 			//Dropout dropout = torch.nn.Dropout(0.25);
@@ -427,7 +405,7 @@ namespace TinyGPT.DecoderV1.Trainer
 			GC.Collect(maxgcgen, GCCollectionMode.Aggressive, true, true);
 			GC.WaitForPendingFinalizers();
 
-			double alr = 1e-4;
+			//double alr = 1e-4;
 
 			Console.WriteLine("Start training...");
 			for (int z = 0; z < trainingBatches; ++z)
@@ -560,8 +538,8 @@ namespace TinyGPT.DecoderV1.Trainer
 				Console.WriteLine("Applying regularization...");
 				//nn.utils.clip_grad_value_(parameters, 1);
 				notchatgpt.L2Regularize(0.0001);
-				notchatgpt.L1Regularize(1e-6);
-				/*
+				notchatgpt.L1Regularize(1e-5);
+				
 				using (no_grad()){
 					foreach (KeyValuePair<string, Tensor> kvp in notchatgpt.state_dict())
 					{
@@ -588,15 +566,15 @@ namespace TinyGPT.DecoderV1.Trainer
 						max.Dispose();
 					}
 				}
-				*/
+				
 				//notchatgpt.L1Regularize(0.1);
 				Console.WriteLine("Optimizer step");
-				adabelief.Step(alr, false, false);
+				adabelief.Step(1e-4, false, false);
 				adabelief.zero_grad();
 
-				alr *= 0.999;
-				alr += 25e-9;
-				Console.WriteLine("Set learning rate to " + alr);
+				//alr *= 0.999;
+				//alr += 25e-9;
+				//Console.WriteLine("Set learning rate to " + alr);
 
 
 

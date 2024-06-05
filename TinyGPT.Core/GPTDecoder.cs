@@ -30,36 +30,37 @@ namespace TinyGPT.Core
 	{
 
 
-
-
-
+		private readonly Parameter wordEmbedding;
+		private readonly Conv1d orderedConv;
+		private readonly Parameter staticPositionalEncoding;
 		private readonly ModuleList<Module<Tensor, Tensor>> layers = new ModuleList<Module<Tensor, Tensor>>();
 		//private readonly ModuleList<TinyRNN> rnnlayers = new ModuleList<TinyRNN>();
 		//private readonly ModuleList<ResidualCausalConvolationalLookback> convAttentionLayers = new ModuleList<ResidualCausalConvolationalLookback>();
-		private readonly Parameter wordEmbedding;
+		
 		private readonly MultiheadSelfAttention finalAttention;
 		private readonly ResidualComputeLayer finalCompute;
 
-		//private readonly Conv1d convBypass;
+		
 
 
 		private readonly int headcount;
 		private readonly Scalar epsilon;
 
 		private readonly int max_context_size;
-		private readonly Parameter staticPositionalEncoding;
-		private readonly int convBypassCausalPadding;
+		
+		private readonly int orderedCausalConvPadding;
+		private readonly Scalar unorderedCausalConvKernelSize;
+		private readonly int unorderedCausalConvPadding;
 		//private readonly Linear supplementalEngine;
 		//public readonly Tensor supplementalWordEmbedding;
 		//private readonly Linear premix;
 
-		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int firstTierAttentionLayers, double positionalEncodingStd, int attentionValueSize, double epsilon, int max_context_size, double wordEmbeddingStd, double initialAttentionGain, double initialComputeGain, double computeDropout, int tokenClasses, int convBypassKernelSize, double keyQueryInitGain, int rnnMemorySize, int rnnAttentionLayers) : base(name)
+		public GPTDecoderUnitV1(string name, int latentTokenSize, int attentionHeadsCount, int firstTierAttentionLayers, double positionalEncodingStd, double epsilon, int max_context_size, double wordEmbeddingStd, double initialAttentionGain, double initialComputeGain, double computeDropout, int tokenClasses, double keyQueryInitGain, int orderedCausalConvKernelSize, int attentionSize, double auxAttentionDropout, int unorderedCausalConvKernelSize) : base(name)
 		{
 			if (attentionHeadsCount < 1)
 			{
 				throw new ArgumentNullException(nameof(attentionHeadsCount));
 			}
-
 			//this.pre_expand = Misc.CreateKaimingInitializedLinear(latentTokenSize, pre_expand, false, init.FanInOut.FanIn);
 			//expand = Misc.CreateKaimingInitializedLinear(latentTokenSize, multipliedWidth, true, init.FanInOut.FanIn);
 
@@ -68,21 +69,16 @@ namespace TinyGPT.Core
 			//engine = Misc.CreateXavierInitializedLinear(latentTokenSize, latentTokenSize, false);
 			//this.supplementalWordEmbedding = supplementalWordEmbedding;
 
-			layers.Add(LayerNorm(latentTokenSize, epsilon, false, false));
-			//convBypass = Conv1d(latentTokenSize, latentTokenSize, convBypassKernelSize);
-			//using (no_grad()) (convBypass.weight ?? throw new Exception("Bypass conv does not have weight (should not reach here)")).normal_(0.0, Math.Sqrt(1.0 / (latentTokenSize * convBypassKernelSize)));
-
-
-			for (int i = 0; i < rnnAttentionLayers; ++i)
-			{
-				layers.Add(new TinyRNN("", latentTokenSize, rnnMemorySize, epsilon));
-			}
+			orderedConv = Conv1d(latentTokenSize, latentTokenSize, orderedCausalConvKernelSize);
+			using (no_grad()) (orderedConv.weight ?? throw new Exception("Bypass conv does not have weight (should not reach here)")).normal_(0.0, Math.Sqrt(1.0 / (latentTokenSize * orderedCausalConvKernelSize)));
+			layers.Add(new ResidualComputeLayer("", latentTokenSize, epsilon, initialComputeGain, computeDropout));
 
 			for (int i = 0; i < firstTierAttentionLayers; ++i)
 			{
-				layers.Add(new MultiheadSelfAttention("", latentTokenSize, attentionValueSize, attentionHeadsCount, epsilon, false, initialAttentionGain, keyQueryInitGain));
+				layers.Add(new MultiheadSelfAttention("", latentTokenSize, attentionSize, attentionHeadsCount, epsilon, initialAttentionGain, keyQueryInitGain, auxAttentionDropout));
 				layers.Add(new ResidualComputeLayer("", latentTokenSize, epsilon, initialComputeGain, computeDropout));
 			}
+
 
 
 			//staticPositionalEncoding = Parameter(zeros(max_context_size, latentTokenSize));
@@ -108,8 +104,7 @@ namespace TinyGPT.Core
 
 
 			//layers.Add(new TinyRNN("", multipliedWidth, multipliedWidth, epsilon));
-			finalAttention = new MultiheadSelfAttention("", latentTokenSize, attentionValueSize, attentionHeadsCount, epsilon, false, initialAttentionGain, keyQueryInitGain);
-
+			finalAttention = new MultiheadSelfAttention("", latentTokenSize, attentionSize, attentionHeadsCount, epsilon, initialAttentionGain, keyQueryInitGain, auxAttentionDropout);
 			//finalBias = Parameter(zeros(1, pretrainedWord2Vec.size(0)));
 			wordEmbedding = Parameter(normal(0.0, wordEmbeddingStd, wordEmbeddingSize));
 			headcount = attentionHeadsCount;
@@ -117,7 +112,9 @@ namespace TinyGPT.Core
 			RegisterComponents();
 			this.epsilon = epsilon;
 			this.max_context_size = max_context_size;
-			this.convBypassCausalPadding = convBypassKernelSize - 1;
+			orderedCausalConvPadding = orderedCausalConvKernelSize - 1;
+			this.unorderedCausalConvKernelSize = (long)unorderedCausalConvKernelSize;
+			unorderedCausalConvPadding = unorderedCausalConvKernelSize - 1;
 		}
 
 		public Tensor Forward(ReadOnlySpan<ushort> input, int slice, double dropout = 0.0)
@@ -134,25 +131,54 @@ namespace TinyGPT.Core
 			for(int i = 0; i < len; ++i){
 				longs[i] = input[i];
 			}
+			Tensor wordEmbedding = this.wordEmbedding;
+			Device device = wordEmbedding.device;
+			Scalar epsilon = this.epsilon;
+
 
 			using (NewDisposeScope())
 			{
 
+				/*
+				Tensor indices;
+				using (Tensor x = arange(unorderedCausalConvKernelSize, ScalarType.Int64, device, false)) indices = x.unsqueeze(0);
 				
-
-				
-
-				Tensor[] all = new Tensor[len];
-				Tensor wordEmbedding = this.wordEmbedding;
-				Device device = wordEmbedding.device;
 
 
 				Tensor y;
-				using(Tensor z2 = tensor(longs, ScalarType.Int64, device, false)){
+				using (Tensor x = arange((long)len, ScalarType.Int64, device, false)) y = x.unsqueeze(1);
+				
+				using(y){
+					using Tensor x = indices;
+					indices = x.add(y);
+				}
+				*/
+				Tensor y;
+				using (Tensor z2 = tensor(longs, ScalarType.Int64, device, false)){
 					y = wordEmbedding[z2];
 				}
+				
+				
+				Tensor convpath;
+				/*
+				using (Tensor x = y.transpose(0, 1)) convpath = functional.pad(x, (unorderedCausalConvPadding, 0), PaddingModes.Zeros, 0.0);
+				using (Tensor x = convpath) convpath = x.transpose(0, 1);
+				using(indices){
+					using Tensor x = convpath;
+					convpath = x[indices];
+				}
+				using (Tensor x = convpath) convpath = x.sum(1, false);
+				using (Tensor x = convpath) convpath = CustomActivations.Norm(x, epsilon);
+				using (Tensor x = convpath) convpath = x.transpose(0, 1);
+				*/
+				
+				using (Tensor x = CustomActivations.Norm(y, epsilon)) convpath = x.transpose(0, 1);
+				using (Tensor x = convpath) convpath = functional.pad(x, (orderedCausalConvPadding, 0), PaddingModes.Zeros, 0.0);
+				using (Tensor x = convpath) convpath = orderedConv.forward(x);
+				using (Tensor x = convpath) convpath = x.transpose(0, 1);
 
-				using(Tensor x = y) if (len == maxlen2)
+
+				using (Tensor x = y) if (len == maxlen2)
 					{
 						y = x.add(staticPositionalEncoding);
 					}
@@ -161,6 +187,7 @@ namespace TinyGPT.Core
 						using Tensor z = staticPositionalEncoding.slice(0, 0, len, 1);
 						y = x.add(z);
 					}
+				using (Tensor x = y) y = CustomActivations.Norm(x, epsilon);
 
 				/*
 				Tensor yconv = y;
@@ -191,6 +218,11 @@ namespace TinyGPT.Core
 				using (Tensor x = yconv) yconv = convBypass.forward(x);
 				using (Tensor x = yconv) yconv = x.transpose(1, 0);
 				*/
+				using(convpath){
+					using Tensor x = y;
+					y = x.add(convpath);
+				}
+				using (Tensor x = y) y = CustomActivations.Norm(x, epsilon);
 
 				MultiheadSelfAttention finalattention = finalAttention;
 
@@ -198,9 +230,9 @@ namespace TinyGPT.Core
 				foreach (Module<Tensor, Tensor> hiddenLayer in layers)
 				{
 					using Tensor x = y;
-					if (hiddenLayer is MultiheadSelfAttention MultiheadSelfAttention)
+					if (hiddenLayer is MultiheadSelfAttention sat)
 					{
-						y = MultiheadSelfAttention.Forward(x, 0, null, dropout, true);
+						y = sat.Forward(x, 0, null, dropout, true);
 					}
 					else
 					{
@@ -234,8 +266,11 @@ namespace TinyGPT.Core
 				}
 				*/
 
+
 				using (Tensor x = y, x1 = wordEmbedding.transpose(0, 1))
 					y = x.matmul(x1);
+
+				
 
 				return y.MoveToOuterDisposeScope();
 
@@ -274,7 +309,7 @@ namespace TinyGPT.Core
 
 		public void L1Regularize(Scalar lambda)
 		{
-			//Misc.L1RegularizeIMPL(convBypass.weight, lambda);
+			Misc.L1RegularizeIMPL(orderedConv.weight, lambda);
 			foreach (Module<Tensor, Tensor> module in layers)
 			{
 				if (module is IL1Regularizable regularizable)
@@ -282,7 +317,9 @@ namespace TinyGPT.Core
 					regularizable.L1Regularize(lambda);
 				}
 			}
+			finalAttention.L1Regularize(lambda);
 			finalCompute.L1Regularize(lambda);
+			Misc.L1RegularizeIMPL(staticPositionalEncoding, lambda);
 		}
 	}
 
