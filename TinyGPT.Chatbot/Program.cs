@@ -66,10 +66,10 @@ namespace TinyGPT.Chatbot
 						const int latentTokenSize = 2048;
 						maxcontext = 1025;
 						const int attentionHeads = 16;
-						const int firstTierAttentionDepth = 4;
+						const int firstTierAttentionDepth = 5;
 						magicTokenClasses = 4;
 						tokenclasses += magicTokenClasses + 1;
-						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, 0.02, 1e-6, 1024, 0.02, 1.0, 1.0, 0.0, tokenclasses, 1.0, 6, 128, 0.0, 4);
+						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, 0.02, 1e-6, 1024, 0.02, 1.0, 1.0, 0.0, tokenclasses, 1.0, 128, 0.0, 1, 2048, 0.0);
 
 					}
 					break;
@@ -100,6 +100,9 @@ namespace TinyGPT.Chatbot
 			}
 
 			Span<ushort> buffer = stackalloc ushort[maxcontext];
+			Span<float> topk = stackalloc float[256];
+			int tkwindow = 0;
+			Misc.MakeSecureRandomFloats(topk);
 			int maxinsize = maxcontext - 2;
 
 
@@ -112,6 +115,7 @@ namespace TinyGPT.Chatbot
 				{
 					continue;
 				}
+				
 				Console.Write("TinyGPT: ");
 				int intokens = Transformer.Tokenize(optidict, buffer, input, maxtokensize, magicTokenClasses);
 				if (intokens > maxinsize)
@@ -124,24 +128,40 @@ namespace TinyGPT.Chatbot
 				//int[] lastRepeat = new int[tokenclasses];
 				for (int i = intokens + 1, i2 = 0; i < maxcontext; ++i, ++i2)
 				{
-					double best = double.NegativeInfinity;
+					double tk = topk[tkwindow] * 0.5;
+					if(tkwindow == 255)
+					{
+						tkwindow = 0;
+						Misc.MakeSecureRandomFloats(topk);
+					} else{
+						++tkwindow;
+					}
 					int bestindex = -1;
-					Tensor tensor;
+					Tensor tensor, indices;
 					using (Tensor x = themodel.Forward(buffer[..i]))
 					{
-						tensor = x.cpu();
+						(tensor, indices) = x.sort(descending: true);
 					}
+					using (Tensor x = tensor)
+					{
+						tensor = x.to(float64);
+					}
+					using (Tensor x = tensor)
+					{
+						tensor = x.softmax(0);
+					}
+
 					using (tensor)
 					{
-						for (int z = 0; z < tokenclasses; ++z)
-						{
-							double my = tensor[z].ToScalar().ToDouble();
-							//my -= (1.0) / ((i-buffer[..i].LastIndexOf((ushort)z))+1);
-							if (my > best)
+						using(indices){
+							int z = 0;
+							for (; z < tokenclasses & tk > 0.0; ++z)
 							{
-								best = my;
-								bestindex = z;
+								using Tensor tt = tensor[z];
+								tk -= tt.ToScalar().ToDouble();
 							}
+							using Tensor tt2 = indices[z];
+							bestindex = tt2.ToScalar().ToInt32();
 						}
 					}
 

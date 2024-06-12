@@ -354,6 +354,7 @@ namespace TinyGPT.Core
 		private readonly Scalar decay2;
 		private readonly Scalar eps;
 		private readonly Scalar eps2;
+		private static readonly Scalar one = 1.0;
 
 		private int step;
 		public AdaBelief(IEnumerable<Parameter> parameters1, double beta1, double beta2, double epsilon, double epsilon2)
@@ -409,13 +410,14 @@ namespace TinyGPT.Core
 			}
 		}
 
-		public void Step(double learningRate, bool final, bool fastAdaBelief)
+		public void Step(double learningRate, bool final, bool fastAdaBelief, double random_variance)
 		{
 			//double stepplusplus = ++step;
 			Scalar bias_correction2 = fastAdaBelief ? (1 - Math.Pow(beta2, ++step)) : Math.Sqrt(1 - Math.Pow(beta2, ++step));
 			//Scalar bias_correction = (1 - Math.Pow(beta1, stepplusplus)) / (1 - beta1);
 			double mlr = -learningRate;
 			Scalar step_size = mlr;
+			Scalar? randvar = random_variance > 0.0 ? (-random_variance) : null;
 			//Scalar ss2 = mlr * decay3;
 
 			Scalar n1 = -1;
@@ -451,20 +453,17 @@ namespace TinyGPT.Core
 					}
 
 
-
-					if(fastAdaBelief){
-						using Tensor x = exp_avg_sq.div(bias_correction2);
-						x.add_(eps);
-
-						param.addcdiv_(exp_avg, x, value: step_size);
-					} else{
-						using Tensor x = exp_avg_sq.sqrt();
-						x.div_(bias_correction2);
-						x.add_(eps2);
-
+					using (Tensor x = fastAdaBelief ? exp_avg_sq.div(bias_correction2).add_(eps2) : exp_avg_sq.sqrt().div_(bias_correction2).add_(eps)){
+						if (randvar is { }){							
+							using Tensor x2 = rand_like(x);
+							x2.mul_(randvar);
+							x2.add_(one);
+							x.div_(x2);
+						}
 						param.addcdiv_(exp_avg, x, value: step_size);
 					}
-					
+
+						
 					if (final)
 					{
 						continue;

@@ -26,7 +26,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int targetUnlabeledTokensPerBatch = 65536;
 		private const int targetLabeledTokensPerBatch = 65536;
 		private const int attentionHeads = 16;
-		private const int firstTierAttentionDepth = 4;
+		private const int firstTierAttentionDepth = 5;
 		private const int magicTokenClasses = 4;
 		private const int minimumInputTokens = 2;
 		private const double regularizationTerm = 0.5;
@@ -349,7 +349,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			double initstd = 1.0 / Math.Sqrt(latentTokenSize);
 
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, initstd, 1e-7, 1024, initstd, 1.0, 1.0, 0.125, tokenclasses, 1.0, 6, 128, 0.125, 4);
+			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, initstd, 1e-7, 1024, initstd, 1.0, 1.0, 0.125, tokenclasses, 1.0, 128, 0.125, 1, 2048, 0.125);
 			//Parameter hashedDecoderEngine = nn.Parameter(randn(latentTokenSize, latentTokenSize, ScalarType.BFloat16, CUDA).mul_(1.0 / Math.Sqrt(latentTokenSize)),true);
 
 			//Dropout dropout = torch.nn.Dropout(0.25);
@@ -569,7 +569,8 @@ namespace TinyGPT.DecoderV1.Trainer
 				
 				//notchatgpt.L1Regularize(0.1);
 				Console.WriteLine("Optimizer step");
-				adabelief.Step(1e-4, false, false);
+				bool fastadabelief = z < 513;
+				adabelief.Step(fastadabelief ? 1e-8 : 1e-4, false, fastadabelief, 0.0);
 				adabelief.zero_grad();
 
 				//alr *= 0.999;

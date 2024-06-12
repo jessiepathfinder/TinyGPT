@@ -5,6 +5,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -156,6 +157,22 @@ namespace TinyGPT.Core
 			//return CreateXavierInitializedLinear(inputs, outputs, bias, gain);
 			Linear linear = Linear(inputs, outputs, bias);
 			init.kaiming_normal_(linear.weight ?? throw new Exception("No weight found (should not reach here)"), gain, fanmode);
+			return linear;
+		}
+		public static Linear CreatePositiveUniformInitializedLinear(int inputs, int outputs, bool bias, double gain = 1.0)
+		{
+			//temptest
+			//return CreateXavierInitializedLinear(inputs, outputs, bias, gain);
+			Linear linear = Linear(inputs, outputs, bias);
+			init.uniform_(linear.weight ?? throw new Exception("No weight found (should not reach here)"), 0.0, gain * Math.Sqrt(3.0 / inputs));
+			return linear;
+		}
+		public static Linear CreateManualPositiveUniformInitializedLinear(int inputs, int outputs, bool bias, int fansize, double gain = 1.0)
+		{
+			//temptest
+			//return CreateXavierInitializedLinear(inputs, outputs, bias, gain);
+			Linear linear = Linear(inputs, outputs, bias);
+			init.uniform_(linear.weight ?? throw new Exception("No weight found (should not reach here)"), 0.0, gain * Math.Sqrt(3.0 / fansize));
 			return linear;
 		}
 		public static Linear CreateManualKaimingInitializedLinear(int inputs, int outputs, bool bias, int fansize, double gain = 1.0)
@@ -325,6 +342,18 @@ namespace TinyGPT.Core
 			yield return append;
 			foreach(T t in enumerator){
 				yield return t;
+			}
+		}
+		public static void MakeSecureRandomFloats(Span<float> span){
+			int len = span.Length;
+			if(len == 0){
+				return;
+			}
+			RandomNumberGenerator.Fill(MemoryMarshal.AsBytes(span));
+			Span<uint> uints = MemoryMarshal.Cast<float, uint>(span);
+			for(int i = 0; i < len; ++i){
+				uints[i] = (uints[i] & 0x3FFFFFFF) | 0x3F800000;
+				span[i] -= 1.0f;
 			}
 		}
 	}
