@@ -10,10 +10,13 @@ using Transformer = TinyGPT.Core.Transformer;
 
 namespace TinyGPT.Chatbot
 {
-	internal class Program
+	internal static class Program
 	{
 		static void Main(string[] args)
 		{
+			string? temperature_str = Environment.GetEnvironmentVariable("TinyGPT_generation_temperature");
+
+			double temperature = temperature_str is null ? 0.5 : Convert.ToDouble(temperature_str);
 			string datadir = args[0];
 			string model = args[1];
 			if (!datadir.EndsWith(Path.DirectorySeparatorChar))
@@ -62,6 +65,7 @@ namespace TinyGPT.Chatbot
 			switch (model)
 			{
 				case "nano-v1":
+				case "nano-v2":
 					{
 						const int latentTokenSize = 2048;
 						maxcontext = 1025;
@@ -101,6 +105,7 @@ namespace TinyGPT.Chatbot
 
 			Span<ushort> buffer = stackalloc ushort[maxcontext];
 			Span<float> topk = stackalloc float[256];
+			Span<ushort> taboo = stackalloc ushort[4];
 			int tkwindow = 0;
 			Misc.MakeSecureRandomFloats(topk);
 			int maxinsize = maxcontext - 2;
@@ -115,7 +120,9 @@ namespace TinyGPT.Chatbot
 				{
 					continue;
 				}
-				
+				for(int i = 0; i < 4; ){
+					taboo[i++] = 65535;
+				}
 				Console.Write("TinyGPT: ");
 				int intokens = Transformer.Tokenize(optidict, buffer, input, maxtokensize, magicTokenClasses);
 				if (intokens > maxinsize)
@@ -128,15 +135,8 @@ namespace TinyGPT.Chatbot
 				//int[] lastRepeat = new int[tokenclasses];
 				for (int i = intokens + 1, i2 = 0; i < maxcontext; ++i, ++i2)
 				{
-					double tk = topk[tkwindow] * 0.5;
-					if(tkwindow == 255)
-					{
-						tkwindow = 0;
-						Misc.MakeSecureRandomFloats(topk);
-					} else{
-						++tkwindow;
-					}
-					int bestindex = -1;
+					
+					
 					Tensor tensor, indices;
 					using (Tensor x = themodel.Forward(buffer[..i]))
 					{
@@ -150,27 +150,60 @@ namespace TinyGPT.Chatbot
 					{
 						tensor = x.softmax(0);
 					}
-
-					using (tensor)
+					using (Tensor x = tensor)
 					{
-						using(indices){
-							int z = 0;
+						tensor = x.cpu();
+					}
+					double tk = 1.0;
+					//MASK taboo words
+					for(int p = 0; p < 4; ){
+						ushort myr = taboo[p++];
+						if (myr == 65535) continue;
+						string? detokenized = decode[myr];
+						if (detokenized is null)
+							continue;
+						if (!detokenized.Contains(','))
+							continue;
+						Scalar sc;
+						using (Tensor x = tensor[myr]) sc = x.ToScalar();
+						tk -= sc.ToDouble();
+						tensor[myr] = 0.0;
+
+					}
+					tk *= topk[tkwindow] * temperature;
+					if (tkwindow == 255)
+					{
+						tkwindow = 0;
+						Misc.MakeSecureRandomFloats(topk);
+					}
+					else
+					{
+						++tkwindow;
+					}
+					ushort bestindex;
+					using (indices)
+					{
+						int z = 0;
+						using (tensor){
+							
 							for (; z < tokenclasses & tk > 0.0; ++z)
 							{
 								using Tensor tt = tensor[z];
 								tk -= tt.ToScalar().ToDouble();
 							}
-							using Tensor tt2 = indices[z];
-							bestindex = tt2.ToScalar().ToInt32();
 						}
+						using Tensor tt2 = indices[z];
+						bestindex = (ushort)tt2.ToScalar().ToInt32();
 					}
+					
 
 					if (bestindex == 1)
 					{
 						break;
 					}
 					//lastRepeat[bestindex] = i2;
-					buffer[i] = (ushort)bestindex;
+					taboo[i % 4] = bestindex;
+					buffer[i] = bestindex;
 					string? str = decode[bestindex];
 
 					if (str is null)

@@ -1,6 +1,7 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <OutputType>Exe</OutputType>
     <TargetFramework>net7.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -16,13 +17,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="..\.editorconfig" Link=".editorconfig" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="TorchSharp" Version="0.102.4" />
-    <PackageReference Include="TorchSharp-cuda-windows" Version="0.102.4" />
-    <PackageReference Include="TorchSharp.FlashAttention-windows" Version="0.2.1" />
+    <ProjectReference Include="..\TinyGPT.Core\TinyGPT.Core.csproj" />
   </ItemGroup>
 
 </Project>

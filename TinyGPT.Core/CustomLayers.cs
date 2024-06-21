@@ -22,6 +22,15 @@ namespace TinyGPT.Core
 			RegisterComponents();
 		}
 	}
+	public sealed class DoesNothingModule : Module
+	{
+		private readonly Module inner;
+		public DoesNothingModule(string name, Module inner) : base(name)
+		{
+			this.inner = inner;
+			RegisterComponents();
+		}
+	}
 	public sealed class ResidualUnorderedCausalConv : Module<Tensor, Tensor>, IL2Regularizable, IL1Regularizable
 	{
 		private readonly Linear inputs;
@@ -113,7 +122,7 @@ namespace TinyGPT.Core
 		}
 		public static void Dropout(ref Tensor input, double prob)
 		{
-			if (prob > 0.0)
+			if (is_grad_enabled() & prob > 0.0)
 			{
 				using Tensor x = input;
 				input = dropout(x, prob, true, false);

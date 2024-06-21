@@ -53,13 +53,7 @@ namespace TinyGPT.Core
 		private static readonly Scalar one = 1;
 		public static Tensor FastCrossEntropyLoss(Tensor input, Tensor logits, double squareboost, bool average, Tensor? boost = null, double gamma = 0.0, bool allow_unsupervised = false) {
 			using(NewDisposeScope()){
-				Tensor z;
-				using(Tensor y = input.exp()){
-					z = y.sum(-1, false);
-				}
-				using(Tensor y = z){
-					z = y.log();
-				}
+				Tensor z = input.logsumexp(-1, false);
 				Tensor x;
 				if(allow_unsupervised){
 					(Tensor v, Tensor i) = input.max(1, true);
@@ -128,7 +122,30 @@ namespace TinyGPT.Core
 
 			}
 		}
+		public static Tensor FastSoftmax(Tensor input, Tensor logits)
+		{
+			using (NewDisposeScope())
+			{
 
+				Tensor x;
+
+				
+				using (Tensor z = input.logsumexp(-1, false))
+				{
+					using Tensor y = nlloss.forward(input, logits);
+					x = z.add(y);
+				}
+
+				using(Tensor y = x){
+					x = y.negative();
+				}
+				using(x){
+					return x.exp().MoveToOuterDisposeScope();
+				}
+
+
+			}
+		}
 		public static void L2RegularizeIMPL(Tensor? tensor, Scalar lambda)
 		{
 

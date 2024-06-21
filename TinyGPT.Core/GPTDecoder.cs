@@ -1,5 +1,4 @@
 ﻿
-using System.Threading.Tasks;
 using TorchSharp;
 using TorchSharp.Modules;
 using static TorchSharp.torch;
@@ -106,8 +105,18 @@ namespace TinyGPT.Core
 			this.epsilon = epsilon;
 			this.max_context_size = max_context_size;
 		}
-
-		public Tensor Forward(ReadOnlySpan<ushort> input, int slice, double dropout = 0.0)
+		public void FinalForward(ref Tensor x){
+			using (Tensor y = x) x = finalAttention.forward(y);
+			using (Tensor y = x) x = finalCompute.forward(y);
+			using (Tensor y = x, x1 = wordEmbedding.transpose(0, 1))
+				x = y.matmul(x1);
+		}
+		public void DecoupledWeightDecayWordEmbeddings(Scalar scalar){
+			using(no_grad()){
+				wordEmbedding.mul_(scalar);
+			}
+		}
+		public Tensor Forward(ReadOnlySpan<ushort> input, int slice, double dropout = 0.0, bool retearly = false)
 		{
 			int len = input.Length;
 			int maxlen2 = max_context_size;
@@ -174,6 +183,9 @@ namespace TinyGPT.Core
 					y = finalattention.Forward(x2, slice, mask, dropout);
 				} else{
 					y = finalattention.Forward(x, 0, null, dropout, true);
+				}
+				if(retearly){
+					return y.MoveToOuterDisposeScope();
 				}
 				using (Tensor x = y) y = finalCompute.forward(x);
 
