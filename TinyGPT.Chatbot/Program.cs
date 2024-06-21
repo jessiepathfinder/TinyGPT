@@ -138,37 +138,39 @@ namespace TinyGPT.Chatbot
 					
 					
 					Tensor tensor, indices;
+					double tk = 1.0;
+
+					
 					using (Tensor x = themodel.Forward(buffer[..i]))
 					{
-						(tensor, indices) = x.sort(descending: true);
-					}
-					using (Tensor x = tensor)
-					{
 						tensor = x.to(float64);
+						//(tensor, indices) = x.sort(descending: true);
 					}
 					using (Tensor x = tensor)
 					{
 						tensor = x.softmax(0);
 					}
-					using (Tensor x = tensor)
-					{
-						tensor = x.cpu();
-					}
-					double tk = 1.0;
 					//MASK taboo words
-					for(int p = 0; p < 4; ){
+					for (int p = 0; p < 4;)
+					{
 						ushort myr = taboo[p++];
 						if (myr == 65535) continue;
 						string? detokenized = decode[myr];
-						if (detokenized is null)
-							continue;
-						if (!detokenized.Contains(','))
+						if (detokenized is { } && detokenized.Contains(','))
 							continue;
 						Scalar sc;
-						using (Tensor x = tensor[myr]) sc = x.ToScalar();
+						using (Tensor tt = tensor[myr]) sc = tt.ToScalar();
 						tk -= sc.ToDouble();
 						tensor[myr] = 0.0;
 
+					}
+					using (Tensor x = tensor)
+					{
+						(tensor, indices) = x.sort(0, true);
+					}
+					using (Tensor x = tensor)
+					{
+						tensor = x.cpu();
 					}
 					tk *= topk[tkwindow] * temperature;
 					if (tkwindow == 255)
