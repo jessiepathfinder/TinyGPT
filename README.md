@@ -10,6 +10,6 @@ and <a href="https://www.yourkit.com/youmonitor/">YourKit YouMonitor</a>
 
 ## A lightweight deep language model
 
-![image](https://github.com/jessiepathfinder/TinyGPT/assets/55774978/d3ffd06f-38b6-407f-8145-8819caece684)
+![image](https://github.com/jessiepathfinder/TinyGPT/assets/55774978/732586fa-18b9-46da-a111-75236a0bd671)
 
 
