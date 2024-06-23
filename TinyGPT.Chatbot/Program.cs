@@ -16,7 +16,7 @@ namespace TinyGPT.Chatbot
 		{
 			string? temperature_str = Environment.GetEnvironmentVariable("TinyGPT_generation_temperature");
 
-			double temperature = temperature_str is null ? 0.5 : Convert.ToDouble(temperature_str);
+			double temperature = temperature_str is null ? 0.9 : Convert.ToDouble(temperature_str);
 			string datadir = args[0];
 			string model = args[1];
 			if (!datadir.EndsWith(Path.DirectorySeparatorChar))
