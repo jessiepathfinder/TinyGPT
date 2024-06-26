@@ -129,6 +129,8 @@ namespace TinyGPT.Core
 						
 					if (final)
 					{
+						mystate.exp_avg.Dispose();
+						mystate.exp_avg_sq.Dispose();
 						continue;
 					}
 
