@@ -28,19 +28,20 @@ namespace TinyGPT.DecoderV2.Trainer
 		private const double futureRewardDecay = 0.99;
 		private const double firstOccouranceBonus = 2.0;
 		private const int antiRepetitionLookback = 4;
-		private const double deepfakeDetectorWeight = 1.0;
+		private const double deepfakeDetectorWeight = 0.1;
 		private const double cumulativeFutureRewardScale = 1.0 - futureRewardDecay;
 		private const int episodeSize = 1024;
-		private const double temperature = 0.8;
+		private const double temperature = 1.0;
+		private const double deepfakeDetectorStepIn = 0.99;
+		private const int multiprop = 4;
 
 
 		private const int mcsm1 = maxContextSize - 1;
 
 
-		private static GPTDecoderUnitV1 CreateDecoder(int tokenclasses, double dropouts)
+		private static GPTDecoderUnitV1_1 CreateDecoder(int tokenclasses, double dropouts)
 		{
-			double initstd = 1.0 / Math.Sqrt(latentTokenSize);
-			return new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, initstd, 1e-7, 1024, initstd, 1.0, 1.0, dropouts, tokenclasses, 1.0, 128, dropouts, 1, 2048, dropouts);
+			return new GPTDecoderUnitV1_1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, 0.0, 1e-7, 1024, 0.0, 1.0, 1.0, dropouts, tokenclasses, 1.0, 128, dropouts, 1, 2048, dropouts,4);
 		}
 
 		private static void Main(string[] args)
@@ -135,22 +136,19 @@ namespace TinyGPT.DecoderV2.Trainer
 			backends.cudnn.allow_tf32 = true;
 			set_default_dtype(ScalarType.BFloat16);
 
-			Console.WriteLine("Initializing primary student model...");
-			GPTDecoderUnitV1 student1 = CreateDecoder(tokenclasses, 0.0);
+			Console.WriteLine("Initializing student model...");
+			GPTDecoderUnitV1_1 student1 = CreateDecoder(tokenclasses, 0.125);
 			student1.to(bfloat16);
 			student1.load(pretrained);
 			student1.to(CUDA);
-			Console.WriteLine("Initializing secondary student model...");
-			GPTDecoderUnitV1 student2 = CreateDecoder(tokenclasses, 0.0);
-			student2.to(bfloat16);
-			student2.load(pretrained);
+
 			Console.WriteLine("Initializing student optimizer...");
 			IEnumerable<Parameter> parameters = student1.parameters();
 			AdaBelief adaBelief = new AdaBelief(parameters, 0.9, 0.999, 1e-9, 1e-15);
 
 
 			Console.WriteLine("Initializing teacher model...");
-			GPTDecoderUnitV1 teacher = CreateDecoder(tokenclasses, 0.0);
+			GPTDecoderUnitV1_1 teacher = CreateDecoder(tokenclasses, 0.0);
 			foreach(Parameter parameter in teacher.parameters()){
 				parameter.requires_grad = false;
 			}
@@ -162,17 +160,17 @@ namespace TinyGPT.DecoderV2.Trainer
 			double sqrt2 = Math.Sqrt(2.0);
 			ModuleList<Module<Tensor, Tensor>> deepfake_detector = new ModuleList<Module<Tensor, Tensor>>()
 			{
-				Misc.CreateKaimingInitializedLinear(2048, 2048, true, init.FanInOut.FanIn,sqrt2),
-				ReLU(),
+				Misc.CreateKaimingInitializedLinear(2048, 2048, true, init.FanInOut.FanIn),
+				Softplus(),
 				Dropout(0.25),
-				Misc.CreateKaimingInitializedLinear(2048, 2048, true, init.FanInOut.FanIn,sqrt2),
-				ReLU(),
+				Misc.CreateKaimingInitializedLinear(2048, 2048, true, init.FanInOut.FanIn),
+				Softplus(),
 				Dropout(0.25),
-				Misc.CreateKaimingInitializedLinear(2048, 2048, true, init.FanInOut.FanIn,sqrt2),
-				ReLU(),
+				Misc.CreateKaimingInitializedLinear(2048, 2048, true, init.FanInOut.FanIn),
+				Softplus(),
 				Dropout(0.25),
-				Misc.CreateKaimingInitializedLinear(2048, 2048, true, init.FanInOut.FanIn,sqrt2),
-				ReLU(),
+				Misc.CreateKaimingInitializedLinear(2048, 2048, true, init.FanInOut.FanIn),
+				Softplus(),
 				Dropout(0.25),
 				Misc.CreateKaimingInitializedLinear(2048, 1, true, init.FanInOut.FanIn)
 			};
@@ -222,12 +220,12 @@ namespace TinyGPT.DecoderV2.Trainer
 			Scalar studentWordEmbeddingsDecoupledWeightDecay = 0.999;
 			Scalar cfrsa = cumulativeFutureRewardScale;
 			long[] reddims = new long[] {1};
+			double dfds = 1.0;
 			for (int z = 0; z < trainingBatches; ++z){
 				Console.WriteLine("Start training batch #{0}...", z);
 
 
-				Console.WriteLine("Migrating secondary student model to GPU...");
-				student2.to(CUDA);
+
 				Console.WriteLine("Populating replay buffer...");
 				set_grad_enabled(false);
 				bool starting = true;
@@ -251,7 +249,7 @@ namespace TinyGPT.DecoderV2.Trainer
 					{
 
 						Tensor tensor;
-						using (Tensor x = student2.Forward(span[..index]))
+						using (Tensor x = student1.Forward(span[..index]))
 						{
 							tensor = x.to(float64);
 						}
@@ -387,16 +385,6 @@ namespace TinyGPT.DecoderV2.Trainer
 					}
 					replayBuffer.Enqueue((span.Slice(0, index).ToArray(), tensor(actions, ScalarType.Int64, CUDA)));
 				}
-				bool isEpisodeTransition = z > 0 & (z % episodeSize) == 0;
-				if(isEpisodeTransition){
-					Console.WriteLine("Disposing secondary student model...");
-					foreach(Parameter parameter in student2.parameters()){
-						parameter.Dispose();
-					}
-				} else{
-					Console.WriteLine("Migrating secondary student model to CPU...");
-					student2.to(CPU);
-				}
 				Console.WriteLine("Migrating teacher to GPU...");
 				teacher.to(CUDA);
 				double totalDeepfakeDetectorLoss = 0.0;
@@ -473,7 +461,6 @@ namespace TinyGPT.DecoderV2.Trainer
 				int rbctr = 0;
 				(ushort[] state, Tensor actions, Tensor rewards)[] SAR = new (ushort[] state, Tensor actions, Tensor rewards)[rbcount];
 				double totalRewards = 0.0;
-				double avgDeepfakeRewards = 0.0;
 				while (replayBuffer.TryDequeue(out (ushort[] state, Tensor actions) run)){
 					int statelen = run.state.Length;
 					
@@ -527,6 +514,10 @@ namespace TinyGPT.DecoderV2.Trainer
 					using (Tensor x = y) y = Misc.FastSoftmax(x, run.actions);
 					using (Tensor x = y) y = x.cpu();
 					Dictionary<ushort, bool> keyValuePairs = new Dictionary<ushort, bool>();
+					double dfr = 1.0;
+					double dfm = deepfakeDetectorWeight * (1.0 - dfds);
+					double mdfr = dfm;
+
 					
 					using (y){
 						using(deepfakeRewards){
@@ -553,8 +544,9 @@ namespace TinyGPT.DecoderV2.Trainer
 											reward = 0.0;
 											goto norewards;
 										}
+										reward += mdfr;
 										reward /= Math.Pow(futureRewardDecay, oi) + cumulativeFutureRewardScale;
-										reward += avgDeepfakeRewards;
+										
 
 										//reward += earlyStoppingBonus * (maxContextSize - statelen);
 										goto fastrewards;
@@ -570,11 +562,14 @@ namespace TinyGPT.DecoderV2.Trainer
 								Scalar sdeepfakeReward;
 								using (Tensor x = deepfakeRewards[oi])
 									sdeepfakeReward = x.ToScalar();
-								double myDeepfakeRewards = sdeepfakeReward.ToDouble() * deepfakeDetectorWeight;
+								double myDeepfakeRewards = sdeepfakeReward.ToDouble();
+								if(myDeepfakeRewards < dfr){
+									dfr = myDeepfakeRewards;
+									mdfr = myDeepfakeRewards * dfm;
+								}
 
-								reward += myDeepfakeRewards;
-								avgDeepfakeRewards *= futureRewardDecay;
-								avgDeepfakeRewards += myDeepfakeRewards;
+								reward += mdfr;
+
 							fastrewards:
 								totalRewards += reward;
 							norewards:
@@ -595,7 +590,7 @@ namespace TinyGPT.DecoderV2.Trainer
 					}
 					SAR[rbctr++] = (run.state, run.actions, tensor(rewards, ScalarType.Float32, CUDA));
 				}
-
+				dfds *= deepfakeDetectorStepIn;
 				Console.WriteLine("Migrating teacher to CPU...");
 				teacher.to(CPU);
 				double deepfakeDetectorLoss = totalDeepfakeDetectorLoss / deepfakeTokens;
@@ -609,7 +604,7 @@ namespace TinyGPT.DecoderV2.Trainer
 					(parameter.grad() ?? throw new Exception("Where is my grad? (should not reach here)")).div_(deepfakeLossDiv);
 				}
 				Console.WriteLine("Deepfake detector optimizer step...");
-				deepfake_adaBelief.Step(1e-5, false, false, 0.0);
+				deepfake_adaBelief.Step(1e-4, false, false, 0.0);
 				Console.WriteLine("Disposing deepfake detector gradients...");
 				foreach (Parameter parameter in parameters1)
 				{
@@ -619,12 +614,11 @@ namespace TinyGPT.DecoderV2.Trainer
 #pragma warning restore CS8625 // Cannot convert null literal to non-nullable reference type.
 				}
 
-
 				
 				Console.WriteLine("Computing and backpropagating loss...");
 				double totalLosses = 0.0;
-				for(int i = 0; i < rbctr; ){
-					(ushort[] state, Tensor actions, Tensor rewards) = SAR[i++];
+				for(int i = 0, stop = rbctr * multiprop; i < stop; ){
+					(ushort[] state, Tensor actions, Tensor rewards) = SAR[i++ % rbctr];
 					//rewards.mul_(cfrsa);
 					int statelen = state.Length - 1;
 
@@ -662,17 +656,18 @@ namespace TinyGPT.DecoderV2.Trainer
 					using(Tensor x = student1.Forward(state.AsSpan(0, statelen), (int)(statelen - actions.size(0)), 0.0, false)){
 						y = x.to(float32);
 					}
-					using(actions){
-						using(rewards){
-							using Tensor x = y;
-							y = Misc.FastCrossEntropyLoss(x, actions, 0.0, false, rewards);
-						}
-					}
+					using (Tensor x = y) y = Misc.FastCrossEntropyLoss(x, actions, 0.0, false, rewards);
 					using (y) {
 						y.backward();
 						totalLosses += y.ToScalar().ToDouble();
 					}
 				}
+				for(int i = 0; i < rbctr; ){
+					(ushort[] state, Tensor actions, Tensor rewards) = SAR[i++];
+					actions.Dispose();
+					rewards.Dispose();
+				}
+				tokensGenerated *= multiprop;
 				Console.WriteLine("Average loss: {0}", totalLosses / tokensGenerated);
 
 
@@ -717,7 +712,7 @@ namespace TinyGPT.DecoderV2.Trainer
 
 				Console.WriteLine("Optimizer step...");
 				
-				adaBelief.Step(1e-5, isEpisodeTransition, false, 0.0);
+				adaBelief.Step(1e-5, false, false, 0.0);
 				
 
 				Console.WriteLine("Disposing gradients...");
@@ -729,21 +724,7 @@ namespace TinyGPT.DecoderV2.Trainer
 					parameter.set_grad(null);
 #pragma warning restore CS8625 // Cannot convert null literal to non-nullable reference type.
 				}
-				if (isEpisodeTransition)
-				{
-					Console.WriteLine("Training episode #{0} completed!", z / episodeSize);
-					Console.WriteLine("Promoting primary student model...");
-					student1.to(CPU);
-					student2 = student1;
-					Console.WriteLine("Re-initializing student model...");
-					student1 = CreateDecoder(tokenclasses, 0.0);
-					student1.to(bfloat16);
-					student1.load(pretrained);
-					student1.to(CUDA);
-					Console.WriteLine("Re-initializing optimizer...");
-					parameters = student1.parameters();
-					adaBelief = new AdaBelief(parameters, 0.9, 0.999, 1e-9, 1e-15);
-				}
+
 
 				//Console.WriteLine("Decoupled weight decay student word embeddings...");
 				//student.DecoupledWeightDecayWordEmbeddings(studentWordEmbeddingsDecoupledWeightDecay);

@@ -90,38 +90,24 @@ namespace TinyGPT.Core
 			}
 			return pos;
 		}
-		public static Tensor CreateSemiCausalAttentionMask(int size, int startCausal, ScalarType scalarType, Device? device)
+		public static Tensor CreateBARTAttentionMask(int size, int startCausal, ScalarType scalarType, Device? device)
 		{
 			using (NewDisposeScope())
 			{
-				//[query, key]
-				Tensor x = zeros(size - startCausal, size - startCausal, scalarType, device);
-
-
-
-
-
-				using (Tensor y = ones(size - startCausal, size - startCausal, ScalarType.Bool, device))
+				Tensor x = zeros(size, size, scalarType, device);
+				using (Tensor y = ones(size, size, ScalarType.Bool, device))
 				{
 					y.tril_(0);
 					y.logical_not_();
+					using (Tensor view = y.slice(1, 0, startCausal, 1))
+					{
+						view.zero_();
+					}
 					x.masked_fill_(y, double.NegativeInfinity);
 				}
-				Tensor[] arr;
-				using (Tensor b = zeros(startCausal, size - startCausal, scalarType, device))
-				{
-					b.fill_(double.NegativeInfinity);
-					arr = new Tensor[] { b, x };
-					using (x)
-					{
-						arr[1] = cat(arr, 0);
-					}
-				}
-				using (Tensor b = zeros(size, startCausal, scalarType, device))
-				{
-					arr[0] = b;
-					return cat(arr, 1).MoveToOuterDisposeScope();
-				}
+				
+
+				return x.MoveToOuterDisposeScope();
 			}
 		}
 

@@ -1,5 +1,6 @@
 ﻿using Newtonsoft.Json;
 using System.Runtime.Serialization.Formatters;
+using System.Text;
 using System.Transactions;
 using TinyGPT.Core;
 using TorchSharp;
@@ -12,6 +13,37 @@ namespace TinyGPT.Chatbot
 {
 	internal static class Program
 	{
+		private sealed class BoosterStage : FullGPTDecoderUnit
+		{
+			private readonly GPTDecoderUnitV1_1 decoder;
+			private readonly Tensor perceptron;
+			private static readonly Scalar zero = 0.0;
+			public BoosterStage(string name, GPTDecoderUnitV1_1 decoder, Tensor perceptron) : base(name)
+			{
+				this.decoder = decoder;
+				this.perceptron = perceptron;
+				RegisterComponents();
+			}
+
+			public override Tensor Forward(ReadOnlySpan<ushort> input)
+			{
+				Tensor[] merge = new Tensor[2];
+				using (NewDisposeScope()){
+					Tensor x;
+					using (Tensor y = decoder.Forward(input, input.Length - 1, 0.0, false, true)) x = y.squeeze(0);
+					using (Tensor y = x){
+						using Tensor y1 = y.clamp_max(zero);
+						merge[0] = y1;
+						merge[1] = y.relu_();
+						x = cat(merge, 0);
+					}
+					using (x){
+						return x.matmul(perceptron).MoveToOuterDisposeScope();
+					}
+
+				}
+			}
+		}
 		static void Main(string[] args)
 		{
 			string? temperature_str = Environment.GetEnvironmentVariable("TinyGPT_generation_temperature");
@@ -64,8 +96,8 @@ namespace TinyGPT.Chatbot
 			int maxcontext;
 			switch (model)
 			{
-				case "nano-v1":
 				case "nano-v2":
+				case "nano-v1_1":
 					{
 						const int latentTokenSize = 2048;
 						maxcontext = 1025;
@@ -73,7 +105,19 @@ namespace TinyGPT.Chatbot
 						const int firstTierAttentionDepth = 5;
 						magicTokenClasses = 4;
 						tokenclasses += magicTokenClasses + 1;
-						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, 0.02, 1e-6, 1024, 0.02, 1.0, 1.0, 0.0, tokenclasses, 1.0, 128, 0.0, 1, 2048, 0.0);
+						themodel = new GPTDecoderUnitV1_1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, 0.0, 1e-6, 1024, 0.0, 1.0, 1.0, 0.0, tokenclasses, 1.0, 128, 0.0, 1, 2048, 0.0, 4);
+					}
+					break;
+				case "nano-v1":
+				
+					{
+						const int latentTokenSize = 2048;
+						maxcontext = 1025;
+						const int attentionHeads = 16;
+						const int firstTierAttentionDepth = 5;
+						magicTokenClasses = 4;
+						tokenclasses += magicTokenClasses + 1;
+						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, 0.0, 1e-6, 1024, 0.0, 1.0, 1.0, 0.0, tokenclasses, 1.0, 128, 0.0, 1, 2048, 0.0);
 
 					}
 					break;
@@ -83,11 +127,18 @@ namespace TinyGPT.Chatbot
 			}
 			themodel.to(ScalarType.BFloat16);
 			themodel.load(datadir + model + ".model");
+			if (themodel is GPTDecoderUnitV1_1 ncg && Environment.GetEnvironmentVariable("TinyGPT_booster_enabled") == "1")
+			{
+				themodel = new BoosterStage("", ncg, Tensor.load(datadir + model + ".booster.model"));
+			}
 			foreach (Parameter parameter in themodel.parameters())
 			{
 				parameter.requires_grad = false;
 			}
 			themodel.eval();
+			if(Environment.GetEnvironmentVariable("TinyGPT_booster_enabled") == "1"){
+				
+			}
 			if (usecuda)
 			{
 				themodel.to(CUDA);

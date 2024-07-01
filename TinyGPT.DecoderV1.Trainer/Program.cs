@@ -11,6 +11,7 @@ using static TorchSharp.torch;
 using static TorchSharp.torch.distributions.constraints;
 using static TorchSharp.torch.optim;
 using static TorchSharp.torch.optim.lr_scheduler;
+using Adam = TinyGPT.Core.Adam;
 using Transformer = TinyGPT.Core.Transformer;
 
 namespace TinyGPT.DecoderV1.Trainer
@@ -349,7 +350,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 			double initstd = 1.0 / Math.Sqrt(latentTokenSize);
 
-			GPTDecoderUnitV1 notchatgpt = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, initstd, 1e-7, 1024, initstd, 1.0, 1.0, 0.125, tokenclasses, 1.0, 128, 0.125, 1, 2048, 0.125);
+			GPTDecoderUnitV1_1 notchatgpt = new GPTDecoderUnitV1_1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, initstd, 1e-7, 1024, initstd, 1.0, 1.0, 0.125, tokenclasses, 1.0, 128, 0.125, 1, 2048, 0.125,4);
 			//Parameter hashedDecoderEngine = nn.Parameter(randn(latentTokenSize, latentTokenSize, ScalarType.BFloat16, CUDA).mul_(1.0 / Math.Sqrt(latentTokenSize)),true);
 
 			//Dropout dropout = torch.nn.Dropout(0.25);
@@ -361,7 +362,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 			IEnumerable <Parameter> parameters = notchatgpt.parameters();
-			AdaBelief adabelief = new AdaBelief(parameters, 0.9, 0.999, 1e-9, 1e-15);
+			AdaBelief optimizer = new AdaBelief(parameters, 0.9, 0.999, 1e-9, 1e-15);
 			//LRScheduler learningRateScheduler = ExponentialLR(adam, 0.9999, 0, true);
 
 
@@ -537,7 +538,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 				Console.WriteLine("Applying regularization...");
 				//nn.utils.clip_grad_value_(parameters, 1);
-				notchatgpt.L2Regularize(0.0001);
+				notchatgpt.L2Regularize(1e-4);
 				notchatgpt.L1Regularize(1e-5);
 				
 				using (no_grad()){
@@ -569,31 +570,10 @@ namespace TinyGPT.DecoderV1.Trainer
 				
 				//notchatgpt.L1Regularize(0.1);
 				Console.WriteLine("Optimizer step");
-				bool fastadabelief = z < 513;
-				adabelief.Step(fastadabelief ? 1e-8 : 1e-4, false, fastadabelief, 0.0);
-				adabelief.zero_grad();
-
-				//alr *= 0.999;
-				//alr += 25e-9;
-				//Console.WriteLine("Set learning rate to " + alr);
+				optimizer.Step(1e-4, false, false, 0.0);
+				optimizer.zero_grad();
 
 
-
-
-				/*
-				if(z >= wordEmbeddingUnlkTreshold & z <= wordEmbeddingRelockTreshold){
-					Tensor grad = word2vec_weights.grad() ?? throw new Exception("Where is my grad? (should not reach here)");
-					grad.div_(costdiv);
-					wordEmbeddingOptimizer.Step(adaptiveLearningRate);
-					if (z == wordEmbeddingRelockTreshold){
-						Console.WriteLine("Locking word embeddings...");
-						grad.Dispose();
-						word2vec_weights.requires_grad_(false);
-						wordEmbeddingOptimizer.Dispose();
-					} else{
-						grad.zero_();
-					}
-				}*/
 
 
 				if (z % 128 == 0)

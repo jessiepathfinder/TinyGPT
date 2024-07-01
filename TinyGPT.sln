@@ -16,6 +16,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution 
 		.editorconfig = .editorconfig
 	EndProjectSection
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TinyGPT.DecoderV1.Booster", "TinyGPT.DecoderV1.Booster\TinyGPT.DecoderV1.Booster.csproj", "{2F1B5C17-23D8-4D36-8E0D-841218A43A4A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -38,6 +40,10 @@ Global
 		{055E939A-1311-4316-BF7A-235309CC9656}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{055E939A-1311-4316-BF7A-235309CC9656}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{055E939A-1311-4316-BF7A-235309CC9656}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2F1B5C17-23D8-4D36-8E0D-841218A43A4A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2F1B5C17-23D8-4D36-8E0D-841218A43A4A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2F1B5C17-23D8-4D36-8E0D-841218A43A4A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2F1B5C17-23D8-4D36-8E0D-841218A43A4A}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
