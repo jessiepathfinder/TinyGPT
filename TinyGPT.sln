@@ -9,14 +9,18 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.DecoderV1.Trainer",
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.Chatbot", "TinyGPT.Chatbot\TinyGPT.Chatbot.csproj", "{1EECBA9A-018D-4833-B1B0-B7D546F54214}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.DecoderV2.Trainer", "TinyGPT.DecoderV2.Trainer\TinyGPT.DecoderV2.Trainer.csproj", "{055E939A-1311-4316-BF7A-235309CC9656}"
-EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{E565FDA0-E28A-4609-A1C3-90B6D31BA32C}"
 	ProjectSection(SolutionItems) = preProject
 		.editorconfig = .editorconfig
 	EndProjectSection
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TinyGPT.DecoderV1.Booster", "TinyGPT.DecoderV1.Booster\TinyGPT.DecoderV1.Booster.csproj", "{2F1B5C17-23D8-4D36-8E0D-841218A43A4A}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.DecoderV1.Booster", "TinyGPT.DecoderV1.Booster\TinyGPT.DecoderV1.Booster.csproj", "{2F1B5C17-23D8-4D36-8E0D-841218A43A4A}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.Word2VecNG.Trainer", "TinyGPT.Word2VecNG.Trainer\TinyGPT.Word2VecNG.Trainer.csproj", "{162A9F3E-EBAF-4856-8E43-E38B6DBDFF55}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TinyGPT.Autoretriever", "TinyGPT.Autoretriever\TinyGPT.Autoretriever.csproj", "{5925D2CC-73A5-4ADC-974E-10570DD3518F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TinyGPT.Autoretriever.Demo", "TinyGPT.Autoretriever.Demo\TinyGPT.Autoretriever.Demo.csproj", "{D278761E-093B-411C-9BD0-9DA00C5503FF}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -36,14 +40,22 @@ Global
 		{1EECBA9A-018D-4833-B1B0-B7D546F54214}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{1EECBA9A-018D-4833-B1B0-B7D546F54214}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{1EECBA9A-018D-4833-B1B0-B7D546F54214}.Release|Any CPU.Build.0 = Release|Any CPU
-		{055E939A-1311-4316-BF7A-235309CC9656}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{055E939A-1311-4316-BF7A-235309CC9656}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{055E939A-1311-4316-BF7A-235309CC9656}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{055E939A-1311-4316-BF7A-235309CC9656}.Release|Any CPU.Build.0 = Release|Any CPU
 		{2F1B5C17-23D8-4D36-8E0D-841218A43A4A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{2F1B5C17-23D8-4D36-8E0D-841218A43A4A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{2F1B5C17-23D8-4D36-8E0D-841218A43A4A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{2F1B5C17-23D8-4D36-8E0D-841218A43A4A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{162A9F3E-EBAF-4856-8E43-E38B6DBDFF55}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{162A9F3E-EBAF-4856-8E43-E38B6DBDFF55}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{162A9F3E-EBAF-4856-8E43-E38B6DBDFF55}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{162A9F3E-EBAF-4856-8E43-E38B6DBDFF55}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5925D2CC-73A5-4ADC-974E-10570DD3518F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5925D2CC-73A5-4ADC-974E-10570DD3518F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5925D2CC-73A5-4ADC-974E-10570DD3518F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5925D2CC-73A5-4ADC-974E-10570DD3518F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D278761E-093B-411C-9BD0-9DA00C5503FF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D278761E-093B-411C-9BD0-9DA00C5503FF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D278761E-093B-411C-9BD0-9DA00C5503FF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D278761E-093B-411C-9BD0-9DA00C5503FF}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
