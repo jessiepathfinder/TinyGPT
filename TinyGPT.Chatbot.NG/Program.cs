@@ -1,4 +1,5 @@
 ﻿using Newtonsoft.Json;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.Serialization.Formatters;
 using System.Text;
 using System.Transactions;
@@ -9,7 +10,7 @@ using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 using Transformer = TinyGPT.Core.Transformer;
 
-namespace TinyGPT.Chatbot
+namespace TinyGPT.Chatbot.NG
 {
 	internal static class Program
 	{
@@ -28,16 +29,19 @@ namespace TinyGPT.Chatbot
 			public override Tensor Forward(ReadOnlySpan<ushort> input)
 			{
 				Tensor[] merge = new Tensor[2];
-				using (NewDisposeScope()){
+				using (NewDisposeScope())
+				{
 					Tensor x;
 					using (Tensor y = decoder.Forward(input, input.Length - 1, 0.0, false, true)) x = y.squeeze(0);
-					using (Tensor y = x){
+					using (Tensor y = x)
+					{
 						using Tensor y1 = y.clamp_max(zero);
 						merge[0] = y1;
 						merge[1] = y.relu_();
 						x = cat(merge, 0);
 					}
-					using (x){
+					using (x)
+					{
 						return x.matmul(perceptron).MoveToOuterDisposeScope();
 					}
 
@@ -46,9 +50,12 @@ namespace TinyGPT.Chatbot
 		}
 		static void Main(string[] args)
 		{
-			string? temperature_str = Environment.GetEnvironmentVariable("TinyGPT_generation_temperature");
+			string? topn_str = Environment.GetEnvironmentVariable("TinyGPT_expand_top_n");
 
-			double temperature = temperature_str is null ? 0.9 : Convert.ToDouble(temperature_str);
+			int expandLimit = topn_str is null ? 16 : Convert.ToInt32(topn_str);
+			topn_str = Environment.GetEnvironmentVariable("TinyGPT_open_list_size");
+
+			int listLimit = topn_str is null ? 1024 : Convert.ToInt32(topn_str);
 			string datadir = args[0];
 			string model = args[1];
 			if (!datadir.EndsWith(Path.DirectorySeparatorChar))
@@ -85,7 +92,7 @@ namespace TinyGPT.Chatbot
 				backends.cuda.enable_math_sdp(false);
 				backends.cuda.enable_flash_sdp(true);
 				backends.cudnn.allow_tf32 = true;
-				
+
 			}
 			else
 			{
@@ -109,7 +116,7 @@ namespace TinyGPT.Chatbot
 					}
 					break;
 				case "nano-v1":
-				
+
 					{
 						const int latentTokenSize = 2048;
 						maxcontext = 1025;
@@ -118,19 +125,6 @@ namespace TinyGPT.Chatbot
 						magicTokenClasses = 4;
 						tokenclasses += magicTokenClasses + 1;
 						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, 0.0, 1e-6, 1024, 0.0, 1.0, 1.0, 0.0, tokenclasses, 1.0, 128, 0.0, 1, 2048, 0.0);
-
-					}
-					break;
-				case "nano-v1_3":
-
-					{
-						const int latentTokenSize = 2048;
-						maxcontext = 1025;
-						const int attentionHeads = 16;
-						const int firstTierAttentionDepth = 5;
-						magicTokenClasses = 3;
-						tokenclasses += magicTokenClasses + 1;
-						themodel = new GPTDecoderUnitV1_3("", latentTokenSize, attentionHeads, firstTierAttentionDepth, 1e-7, 1.0, 1.0, 0.0, tokenclasses, 1.0, 128, 0.0, 1, 2048, 0.0, new InitDecoder("", empty(tokenclasses, latentTokenSize), 2048, 3, tokenclasses));
 
 					}
 					break;
@@ -162,9 +156,7 @@ namespace TinyGPT.Chatbot
 				parameter.requires_grad = false;
 			}
 			themodel.eval();
-			if(Environment.GetEnvironmentVariable("TinyGPT_booster_enabled") == "1"){
-				
-			}
+
 			if (usecuda)
 			{
 				themodel.to(CUDA);
@@ -181,10 +173,7 @@ namespace TinyGPT.Chatbot
 			}
 
 			Span<ushort> buffer = stackalloc ushort[maxcontext];
-			Span<float> topk = stackalloc float[256];
-			Span<ushort> taboo = stackalloc ushort[4];
-			int tkwindow = 0;
-			Misc.MakeSecureRandomFloats(topk);
+
 			int maxinsize = maxcontext - 2;
 
 
@@ -197,9 +186,7 @@ namespace TinyGPT.Chatbot
 				{
 					continue;
 				}
-				for(int i = 0; i < 4; ){
-					taboo[i++] = 65535;
-				}
+
 				Console.Write("TinyGPT: ");
 				int intokens = Transformer.Tokenize(optidict, buffer, input, maxtokensize, magicTokenClasses);
 				if (intokens > maxinsize)
@@ -207,95 +194,158 @@ namespace TinyGPT.Chatbot
 					Console.WriteLine("too big!");
 					continue;
 				}
-				buffer[intokens] = 0; //[STARTGPT]
-									  //int[] lastRepeat = new int[tokenclasses];
-				//int[] lastRepeat = new int[tokenclasses];
-				for (int i = intokens + 1, i2 = 0; i < maxcontext; ++i, ++i2)
-				{
-					
-					
-					Tensor tensor, indices;
-					double tk = 1.0;
+				int it1 = intokens + 1;
 
+				
+				
+				State?[] openList = new State?[listLimit];
+				openList[0] = new State(buffer.Slice(0, intokens).ToArray(), 0, 0.0);
+				int openListCircularAssist = 0;
+				Queue<(ReadOnlyMemory<ushort> memory, double loss)> solutions = new Queue<(ReadOnlyMemory<ushort> memory, double loss)>();
+				while(true){
+					double lloss = double.PositiveInfinity;
+					int delete = -1;
+					for(int i = 0; i < listLimit; ++i){
+						State? s1 = openList[i];
+						if (s1 is null) continue;
+						double myloss = s1.total_loss / ((s1.state.Length - intokens) + 1);
+						if(myloss < lloss){
+							lloss = myloss;
+							delete = i;
+						}
+					}
+					if (delete < 0) break;
+					State s = openList[delete] ?? throw new Exception("Unexpected null state selected (should not reach here)");
+					ReadOnlyMemory<ushort> myprev = s.state;
 					
-					using (Tensor x = themodel.Forward(buffer[..i]))
+					int mylen = myprev.Length;
+					//Console.WriteLine(mylen);
+
+					bool isCriticalLen = mylen == maxcontext;
+					openList[delete] = null;
+
+					double myloss1 = s.total_loss;
+					int oml = mylen;
+					ushort[] commit = new ushort[++mylen];
+					myprev.CopyTo(commit);
+					commit[oml] = s.action;
+					double divide1 = (mylen - intokens) + 1;
+					Tensor losses;
+					Tensor indices;
+					ReadOnlyMemory<ushort> crom = commit;
+					using (Tensor x = themodel.Forward(crom.Span))
 					{
-						tensor = x.to(float64);
-						//(tensor, indices) = x.sort(descending: true);
+						(losses, indices) = x.sort(0, true, false);
 					}
-					using (Tensor x = tensor)
+					using (Tensor x = losses) losses = x.log_softmax(0, ScalarType.Float64);
+					if (usecuda)
 					{
-						tensor = x.softmax(0);
+						using (Tensor x = losses) losses = x.cpu();
+						using (Tensor x = indices) indices = x.cpu();
 					}
-					//MASK taboo words
-					for (int p = 0; p < 4;)
+					for (int i = 0; i < expandLimit; ++i)
 					{
-						ushort myr = taboo[p++];
-						if (myr == 65535) continue;
-						string? detokenized = decode[myr];
-						if (detokenized is { } && detokenized.Contains(','))
+						double myloss;
+						using (Tensor temp1 = losses[i]) myloss = temp1.ToDouble();
+						myloss *= -1;
+						myloss += myloss1;
+						double mldiv = myloss / divide1;
+						int myind;
+						
+						using (Tensor temp1 = indices[i]) myind = temp1.ToInt32();
+
+						string? detokenized = decode[myind];
+						ushort ms = (ushort)myind;
+						if ((!(detokenized is { } && detokenized.Contains(','))) && commit.AsSpan(Math.Max(it1, mylen - 4)).Contains(ms)) {
 							continue;
-						Scalar sc;
-						using (Tensor tt = tensor[myr]) sc = tt.ToScalar();
-						tk -= sc.ToDouble();
-						tensor[myr] = 0.0;
+						}
 
-					}
-					using (Tensor x = tensor)
-					{
-						(tensor, indices) = x.sort(0, true);
-					}
-					using (Tensor x = tensor)
-					{
-						tensor = x.cpu();
-					}
-					tk *= topk[tkwindow] * temperature;
-					if (tkwindow == 255)
-					{
-						tkwindow = 0;
-						Misc.MakeSecureRandomFloats(topk);
-					}
-					else
-					{
-						++tkwindow;
-					}
-					ushort bestindex;
-					using (indices)
-					{
-						int z = 0;
-						using (tensor){
+						bool finished = myind == 1;
+						if (finished | isCriticalLen){
+							ReadOnlyMemory<ushort> u = myprev[(intokens + 1)..];
+							if(!finished){
+								int temlen = u.Length;
+								ushort[] ushorts = new ushort[temlen + 1];
+								u.CopyTo(ushorts);
+								ushorts[temlen] = (ushort)myind;
+								u = ushorts;
+							}
+							solutions.Enqueue((u, myloss));
+							continue;
+						}
+
+						double highestLoss = 0.0;
+						int replaceIndex = -1;
+						for(int z = 0; z < listLimit; ++z){
+							++openListCircularAssist;
+							openListCircularAssist %= listLimit;
+							State? s1 = openList[openListCircularAssist];
+							if(s1 is null){
+								replaceIndex = openListCircularAssist;
+								break;
+							}
+							int s1sl = s1.state.Length;
+							if (s1sl >= mylen) continue;
 							
-							for (; z < tokenclasses & tk > 0.0; ++z)
-							{
-								using Tensor tt = tensor[z];
-								tk -= tt.ToScalar().ToDouble();
+							double myloss2 = (s1.total_loss) / ((s1sl - intokens) + 1);
+
+							if (myloss2 < mldiv) continue;
+							if (myloss2 > highestLoss){
+								highestLoss = myloss2;
+								replaceIndex = openListCircularAssist;
 							}
 						}
-						using Tensor tt2 = indices[z];
-						bestindex = (ushort)tt2.ToScalar().ToInt32();
+						if(replaceIndex > -1){
+							openList[replaceIndex] = new State(crom, ms, myloss);
+						}
 					}
-					
+					losses.Dispose();
+					indices.Dispose();
 
-					if (bestindex == 1)
-					{
-						break;
+
+				}
+				if (solutions.Count == 0) throw new Exception("Solution list empty (should not reach here)");
+				ReadOnlyMemory<ushort> rom1 = ReadOnlyMemory<ushort>.Empty;
+				double bestloss3 = double.PositiveInfinity;
+				while(solutions.TryDequeue(out (ReadOnlyMemory<ushort> mem, double loss) x)){
+					double myloss4 = x.loss / x.mem.Length;
+					if (myloss4 < bestloss3){
+						bestloss3 = x.loss;
+						rom1 = x.mem;
 					}
-					//lastRepeat[bestindex] = i2;
-					taboo[i % 4] = bestindex;
-					buffer[i] = bestindex;
+				}
+
+				ReadOnlySpan<ushort> findump = rom1.Span;
+				for (int i = 0, stop = findump.Length; i < stop; ++i){
+					int bestindex = findump[i];
 					string? str = decode[bestindex];
 
-					if (str is null)
-					{
-						str = " invalid_word_" + bestindex;
-					}
+					str ??= " invalid_word_" + bestindex;
 					Console.Write(str);
 				}
+
+
+
+
 				Console.WriteLine();
 				Console.WriteLine("==================================================");
 				Console.WriteLine();
 
 			}
 		}
+		private sealed record State{
+			public readonly double total_loss;
+			public readonly ushort action;
+			public readonly ReadOnlyMemory<ushort> state;
+
+			public State(ReadOnlyMemory<ushort> state, ushort action, double total_loss)
+			{
+				this.total_loss = total_loss;
+				this.action = action;
+				this.state = state;
+			}
+
+		}
+
 	}
 }
