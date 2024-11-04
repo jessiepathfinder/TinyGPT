@@ -6,7 +6,7 @@
 3. Do not blindly trust generative AI to generate factually correct text, always verify!
 
 ## A lightweight generative large language model
-![image](https://github.com/user-attachments/assets/781da28b-49f0-4152-888f-7023a55c949a)
+![image](https://github.com/user-attachments/assets/51dc1ae2-8b1f-4701-b1f5-9abea19221a7)
 
 
 
