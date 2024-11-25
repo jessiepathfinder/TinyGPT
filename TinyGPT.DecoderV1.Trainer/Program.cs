@@ -365,11 +365,12 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 			InitDecoder initDecoder = new InitDecoder("", empty(tokenclasses, latentTokenSize), 2048, 3, tokenClasses2);
-			foreach (Parameter parameter1 in initDecoder.parameters()) parameter1.requires_grad = false;
+			initDecoder.Hack2();
 			initDecoder.to(bfloat16);
 			initDecoder.load(datadir + "initdecoder.model");
+			
 
-			GPTDecoderUnitV1_3 notchatgpt = new GPTDecoderUnitV1_3("", latentTokenSize, attentionHeads, firstTierAttentionDepth, 1e-7, 1.0, 1.0, 0.125, tokenclasses, 1.0, 128, 0.125, 1, 2048, 0.125, initDecoder);
+			GPTDecoderUnitV1_3 notchatgpt = new GPTDecoderUnitV1_3("", latentTokenSize, attentionHeads, firstTierAttentionDepth, 1e-7, 1.0, 1.0, 0.125, tokenclasses, 1.0, 128, 0.125, 1, 2048, 0.125, initDecoder, 1);
 			//Parameter hashedDecoderEngine = nn.Parameter(randn(latentTokenSize, latentTokenSize, ScalarType.BFloat16, CUDA).mul_(1.0 / Math.Sqrt(latentTokenSize)),true);
 
 			//Dropout dropout = torch.nn.Dropout(0.25);
@@ -385,11 +386,12 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 
-			AdaBelief optimizer = new AdaBelief(parameters, 0.9, 0.999, 1e-9, 1e-15);
-
+			//SGDMomentum optimizer = new SGDMomentum(notchatgpt.state_dict(), 0.9, out ParameterDict md);
+			AdaBelief optimizer = new AdaBelief(notchatgpt.state_dict(), 0.9, 0.999, 1e-9, 1e-15, out ModuleDict<AdaState> md);
+			DoesNothingModule doesNothingModule = new DoesNothingModule("", md);
 			AOT_KLSTM_Bugfix.forceDropoutNonGrad = true;
 			//AdaMaxSimple fin_optimizer = new AdaMaxSimple(new Parameter[] { fin }, 0.9, 1e-9);
-			//LRScheduler learningRateScheduler = ExponentialLR(adam, 0.9999, 0, true);
+			
 
 
 
@@ -431,7 +433,6 @@ namespace TinyGPT.DecoderV1.Trainer
 			GC.Collect(maxgcgen, GCCollectionMode.Aggressive, true, true);
 			GC.WaitForPendingFinalizers();
 
-			//double alr = 1e-4;
 
 			Console.WriteLine("Start training...");
 			bool notDisabledDropout = true;
@@ -444,28 +445,22 @@ namespace TinyGPT.DecoderV1.Trainer
 				int unlabeledTokensGenerated = 0;
 				int labeledTokensGenerated = 0;
 				double totalLosses = 0;
-				/*
-				if (z == wordEmbeddingUnlkTreshold)
-				{
-					Console.WriteLine("Unlocking word embeddings for training...");
-					word2vec_weights.requires_grad_(true);
-				}
-				*/
 
-				while (labeledTokensGenerated <= targetLabeledTokensPerBatch & unlabeledTokensGenerated <= targetUnlabeledTokensPerBatch)
+
+				while (true)
 				{
 					int mode;
-					if (labeledTokensGenerated > targetLabeledTokensPerBatch)
-					{
-						mode = 1;
-					}
-					else if (unlabeledTokensGenerated > targetUnlabeledTokensPerBatch)
+					if (labeledTokensGenerated < targetLabeledTokensPerBatch)
 					{
 						mode = 0;
 					}
+					else if (unlabeledTokensGenerated < targetUnlabeledTokensPerBatch)
+					{
+						mode = 1;
+					}
 					else
 					{
-						mode = RandomNumberGenerator.GetInt32(0, 2);
+						break;
 					}
 
 					//FAST non-branching mode selector
@@ -498,11 +493,9 @@ namespace TinyGPT.DecoderV1.Trainer
 							x = y.to(float32);
 						}
 
-
-
 						using (Tensor target = tensor(cputarget2, ScalarType.Int64, CUDA), y = x)
 						{
-							x = Misc.FastCrossEntropyLoss(y, target, 0.0, false, null, 0.0, false);
+							x = Misc.FastCrossEntropyLoss(y, target, 0.0, false, null, 0.0, false, false);
 						}
 
 						using (x)
@@ -518,17 +511,12 @@ namespace TinyGPT.DecoderV1.Trainer
 
 				totalLosses /= totalTokensGenerated;
 
-				Console.WriteLine("Average loss per token: " + totalLosses);
-
-				if ((totalLosses < 4.0) & notDisabledDropout)
-				{
-					Console.WriteLine("Disabling dropout...");
+				if(totalLosses < 4.0 & notDisabledDropout){
 					CustomActivations.threadPrivateDropoutDisableHack = true;
 					notDisabledDropout = false;
 				}
 
-
-
+				Console.WriteLine("Average loss per token: " + totalLosses);
 
 				Console.WriteLine("Scaling gradients...");
 				Scalar costdiv = totalTokensGenerated;
@@ -541,8 +529,10 @@ namespace TinyGPT.DecoderV1.Trainer
 
 				Console.WriteLine("Applying regularization...");
 				//nn.utils.clip_grad_value_(parameters, 1);
-				notchatgpt.L2Regularize(1e-4);
+				//notchatgpt.L2Regularize(1e-4);
+				notchatgpt.L2RegularizeSkipAttn(1e-4);
 				notchatgpt.L2RegularizeOutput(1e-4);
+				initDecoder.L2RegularizeOutput(1e-4);
 
 				using (no_grad())
 				{
@@ -568,18 +558,20 @@ namespace TinyGPT.DecoderV1.Trainer
 
 				//notchatgpt.L1Regularize(0.1);
 				Console.WriteLine("Optimizer step");
-				optimizer.Step(1e-4, false, false, 0.0, false, 0.00);
+				optimizer.Step(1e-4, false, false, 0.0, false, 0.0);
+				//optimizer.Step(0.1, false, false);
 				optimizer.zero_grad();
 
-				//fin_optimizer.Step(1e-3, false,true);
-				//fin_optimizer.zero_grad();
+
 
 				if (z > 0 & (z % 256 == 0))
 				{
 
-					//Console.WriteLine("Saving interim policy...");
-					//notchatgpt.save(save + z);
+					Console.WriteLine("Saving interim policy...");
+					notchatgpt.save(save + z);
+					doesNothingModule.save(save + "_optimizer" + z);
 				}
+				//if (z == 1024) break;
 
 
 

@@ -1,7 +1,4 @@
-﻿
-using System.ComponentModel;
-using System.Xml.Linq;
-using TorchSharp;
+﻿using TorchSharp;
 using TorchSharp.Modules;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
@@ -935,8 +932,8 @@ namespace TinyGPT.Core
 		
 		public Tensor FinalForward2(Tensor x) => x.matmul(finalLinear);
 		private readonly int causalConvPaddingSize;
-		
-		public GPTDecoderUnitV1_3(string name, int latentTokenSize, int attentionHeadsCount, int firstTierAttentionLayers, double epsilon, double initialAttentionGain, double initialComputeGain, double computeDropout, int tokenClasses, double keyQueryInitGain, int attentionSize, double auxAttentionDropout, int lstmlayers, int lstmHiddenStateSize, double lstmOutputDropout, InitDecoder initDecoder) : base(name)
+		private readonly int multicompute;
+		public GPTDecoderUnitV1_3(string name, int latentTokenSize, int attentionHeadsCount, int firstTierAttentionLayers, double epsilon, double initialAttentionGain, double initialComputeGain, double computeDropout, int tokenClasses, double keyQueryInitGain, int attentionSize, double auxAttentionDropout, int lstmlayers, int lstmHiddenStateSize, double lstmOutputDropout, InitDecoder initDecoder, int multiApplyComputeLayers) : base(name)
 		{
 			if (attentionHeadsCount < 1)
 			{
@@ -980,13 +977,13 @@ namespace TinyGPT.Core
 
 			RegisterComponents();
 			this.epsilon = epsilon;
-
-			
+			multicompute = multiApplyComputeLayers;
 		}
 
 		public Tensor Forward(ReadOnlySpan<ushort> input, int slice, double dropout = 0.0)
 		{
 			int len = input.Length;
+			int map = multicompute;
 
 			bool multioutput = (len - slice) > 1;
 
@@ -1005,6 +1002,8 @@ namespace TinyGPT.Core
 			Scalar epsilon = this.epsilon;
 			bool sl0 = slice > 0;
 			bool zss = softslice == 0;
+
+
 
 			using (NewDisposeScope())
 			{
@@ -1026,7 +1025,7 @@ namespace TinyGPT.Core
 				} else{
 					ct = y.slice(0, softslice, len, 1);
 					initDecoder.DoIt(ref ct, slice - softslice);
-					using (Tensor x = y) y = CustomActivations.Norm(x, epsilon);
+					using Tensor x = y; y = CustomActivations.Norm(x, epsilon);
 				}
 				
 
@@ -1039,7 +1038,13 @@ namespace TinyGPT.Core
 
 				foreach (Module<Tensor, Tensor> hiddenLayer in layers)
 				{
-
+					if(hiddenLayer is ResidualComputeLayer2 residualComputeLayer){
+						for(int i = 0; i < map; ++i){
+							using Tensor x1 = y;
+							y = residualComputeLayer.forward(x1);
+						}
+						continue;
+					}
 					using Tensor x = y;
 					if (hiddenLayer is MultiheadSelfAttention sat)
 					{
@@ -1074,12 +1079,12 @@ namespace TinyGPT.Core
 
 
 
-				using (Tensor x = y) y = finalCompute.forward(x);
-				
+				for(int i = 0; i < map;++i) using (Tensor x = y) y = finalCompute.forward(x);
+
 				using (Tensor x = y) y = CustomActivations.Norm(x, epsilon);
 				using (Tensor x = y) y = x.matmul(finalLinear);
 				using (ct) using (Tensor x = y) y = x.add(ct);
-
+				
 
 				return y.MoveToOuterDisposeScope();
 
@@ -1112,6 +1117,21 @@ namespace TinyGPT.Core
 				}
 			}
 			finalAttention.L2Regularize(lambda);
+			finalCompute.L2Regularize(lambda);
+			Misc.L2RegularizeIMPL(finalLinear, lambda);
+		}
+		public void L2RegularizeSkipAttn(Scalar lambda)
+		{
+
+			foreach (Module<Tensor, Tensor> module in layers)
+			{
+				if (module is IL2Regularizable regularizable)
+				{
+					if (module is MultiheadSelfAttention) continue;
+					regularizable.L2Regularize(lambda);
+				}
+			}
+			//finalAttention.L2Regularize(lambda);
 			finalCompute.L2Regularize(lambda);
 			Misc.L2RegularizeIMPL(finalLinear, lambda);
 		}
@@ -1155,6 +1175,14 @@ namespace TinyGPT.Core
 			}
 			foreach (Parameter p in finalAttention.GetSpecialTreatmentLayers()) yield return p;
 		}
+		public void PrepareRetrain()
+		{
+			Tensor o = finalLinear;
+			o.zero_();
+			o.requires_grad = true;
+			
+			initDecoder.PrepareRetrain();
+		}
 	}
 	public sealed class InitDecoder : FullGPTDecoderUnit, IL2Regularizable
 	{
@@ -1166,7 +1194,17 @@ namespace TinyGPT.Core
 		private readonly Parameter output;
 
 		private static readonly jit.CompilationUnit compilationUnit = jit.compile("def aot_rnn_core_nodrop_special(core : Tensor, input_ : Tensor, slicey: int) -> Tensor:    \r\n    length = input_.size(-2)    \r\n    hidden_state = input_.select(-2,0).arctan()\r\n    if(length == 1):\r\n        return hidden_state.unsqueeze(-2)\r\n    \r\n    outputs = []\r\n    if slicey == 0:\r\n        outputs.append(hidden_state.unsqueeze(-2))\r\n    \r\n    for x in range(1,length):\r\n        hidden_state = input_.select(-2,x).add(hidden_state.matmul(core)).arctan()\r\n        if x >= slicey:\r\n            outputs.append(hidden_state.unsqueeze(-2))\r\n\r\n    return torch.cat(outputs, -2) if (length - slicey) > 1 else outputs[0]\r\n");
-
+		public void PrepareRetrain(){
+			Tensor o = output;
+			o.zero_();
+			o.requires_grad = true;
+			
+		}
+		public void Hack2(){
+			input.requires_grad = false;
+			input_bias.requires_grad = false;
+			core.requires_grad = false;
+		}
 		public InitDecoder(string name, Tensor wordEmbeddings, long memorySize, long convKernelSize, long tokenClasses) : base(name)
 		{
 			this.wordEmbeddings = wordEmbeddings;
@@ -1220,6 +1258,10 @@ namespace TinyGPT.Core
 		{
 			Misc.L2RegularizeIMPL(input, lambda);
 			Misc.L2RegularizeIMPL(core, lambda);
+			Misc.L2RegularizeIMPL(output, lambda);
+		}
+		public void L2RegularizeOutput(Scalar lambda)
+		{
 			Misc.L2RegularizeIMPL(output, lambda);
 		}
 	}

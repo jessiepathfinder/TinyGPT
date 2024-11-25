@@ -24,7 +24,9 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.Autoretriever.Demo"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.Chatbot.NG", "TinyGPT.Chatbot.NG\TinyGPT.Chatbot.NG.csproj", "{4BF30A56-F9D1-4811-8C31-6AB074BBCE76}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TinyGPT.Decoder.Init.Trainer", "TinyGPT.Decoder.Init.Trainer\TinyGPT.Decoder.Init.Trainer.csproj", "{1F2CD365-14E0-4AA7-93F8-56F155C48499}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.Decoder.Init.Trainer", "TinyGPT.Decoder.Init.Trainer\TinyGPT.Decoder.Init.Trainer.csproj", "{1F2CD365-14E0-4AA7-93F8-56F155C48499}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TinyGPT.SimpleDecoder.Trainer", "TinyGPT.SimpleDecoder.Trainer\TinyGPT.SimpleDecoder.Trainer.csproj", "{8E241995-6B4D-42C2-9BA7-6065E828A741}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -68,6 +70,10 @@ Global
 		{1F2CD365-14E0-4AA7-93F8-56F155C48499}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{1F2CD365-14E0-4AA7-93F8-56F155C48499}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{1F2CD365-14E0-4AA7-93F8-56F155C48499}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8E241995-6B4D-42C2-9BA7-6065E828A741}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8E241995-6B4D-42C2-9BA7-6065E828A741}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8E241995-6B4D-42C2-9BA7-6065E828A741}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8E241995-6B4D-42C2-9BA7-6065E828A741}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

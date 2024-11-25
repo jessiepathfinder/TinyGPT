@@ -7,6 +7,7 @@ using System.Text;
 using TinyGPT.Core;
 using TorchSharp;
 using TorchSharp.Modules;
+using static System.Net.Mime.MediaTypeNames;
 using static TorchSharp.torch;
 using static TorchSharp.torch.distributions.constraints;
 using static TorchSharp.torch.optim;
@@ -25,8 +26,7 @@ namespace TinyGPT.Decoder.Init.Trainer
 		private const int maxContextSize = 2049;
 		private const int encbufsize = maxContextSize - 1;
 		private const int trainingBatches = 2048;
-		private const int targetUnlabeledTokensPerBatch = 65536 * 2;
-		private const int targetLabeledTokensPerBatch = 65536 * 2;
+		private const int targetTokensPerBatch = 65536 * 4;
 		private const int attentionHeads = 16;
 		private const int firstTierAttentionDepth = 5;
 		private const int magicTokenClasses = 3;
@@ -42,6 +42,19 @@ namespace TinyGPT.Decoder.Init.Trainer
 			public string title;
 			public string[] section_titles;
 			public string[] section_texts;
+#pragma warning restore CS0649
+#pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
+		}
+		[JsonObject(MemberSerialization.Fields)]
+		private sealed class WebTextArticle
+		{
+			//SUPPRESS WARNINGS since fields will be reflectively set
+#pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
+#pragma warning disable CS0649
+			public int id;
+			public bool ended;
+			public int length;
+			public string text;
 #pragma warning restore CS0649
 #pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
 		}
@@ -66,7 +79,9 @@ namespace TinyGPT.Decoder.Init.Trainer
 
 			param -= (exp_avg / ((Math.Sqrt(exp_avg_sq / correct)) + epsilon)) * lr;
 		}
-
+		private static int loadprogress;
+		private static int wikiloadprogress;
+		private static int wtloadprogress;
 		private static void Main(string[] args)
 		{
 			string datadir = args[0];
@@ -119,20 +134,22 @@ namespace TinyGPT.Decoder.Init.Trainer
 			Console.WriteLine("Loading simple english wikipedia dataset...");
 			string[]? wikiarticles = File.ReadAllLines(datadir + "simplewiki-latest.jsonl");
 
-
 			int wikilen2 = wikiarticles.Length;
+
+			Console.WriteLine("Loading GPT-2 mini webtext dataset...");
+			string[]? webtext = File.ReadAllLines(datadir + "webtext.train.jsonl");
+
+			int wtlength = webtext.Length;
+			//int wtlen2 = wtlength;
 
 			Console.WriteLine("Starting dataset tokenizers...");
 			int wqlength = wqlen2;
 			int wikilen = wikilen2;
 
-			ConcurrentQueue<ushort[]>? alldata = new();
+			ConcurrentBag<ushort[]>? alldata = new();
 			//ConcurrentBag<int[]>? classcounters = new();
 			int threads = Environment.ProcessorCount;
-			Barrier? barrier3 = new Barrier(threads);
-			int wikisplit = 0;
-			int loadprogress = 0;
-			int wikiloadprogress = 0;
+			
 			Thread[] thrlist = new Thread[threads];
 
 
@@ -149,6 +166,7 @@ namespace TinyGPT.Decoder.Init.Trainer
 					int mywqlen = wqlength;
 					string str1 = "Tokenized {0}/" + mywqlen + " question-answer pairs";
 					int mywikilen = wikilen;
+					int mywtlen = wtlength;
 					//int[] counter = new int[tokenClasses2];
 					//classcounters.Add(counter);
 					//int sa2 = suboptimalSkipInitialTokens + 2;
@@ -187,7 +205,7 @@ namespace TinyGPT.Decoder.Init.Trainer
 
 
 
-						alldata.Enqueue(encbuffer[..(size1 + 1)].ToArray());
+						alldata.Add(encbuffer[..(size1 + 1)].ToArray());
 
 
 						if ((a & 4095) == 4095)
@@ -197,17 +215,7 @@ namespace TinyGPT.Decoder.Init.Trainer
 
 					}
 
-					barrier3.SignalAndWait();
-					if (za == 0)
-					{
-						wikisplit = alldata.Count;
-					}
-					barrier3.SignalAndWait();
-					if (za == 0)
-					{
-						barrier3.Dispose();
-						barrier3 = null;
-					}
+
 					str1 = "Tokenized {0}/" + mywikilen + " simple english wikipedia articles";
 
 					while (true)
@@ -215,7 +223,7 @@ namespace TinyGPT.Decoder.Init.Trainer
 						int a = Interlocked.Increment(ref wikiloadprogress);
 						if (a > mywikilen)
 						{
-							return;
+							break;
 						}
 						a -= 1;
 						WikipediaArticle? wikipediaArticle = JsonConvert.DeserializeObject<WikipediaArticle>(wikiarticles[a]);
@@ -271,12 +279,31 @@ namespace TinyGPT.Decoder.Init.Trainer
 
 
 
-							alldata.Enqueue(encbuffer[..(size1 + 1)].ToArray());
+							alldata.Add(encbuffer[..(size1 + 1)].ToArray());
 
 
 
 
 						}
+						if ((a & 4095) == 4095)
+						{
+							Console.WriteLine(str1, a);
+						}
+					}
+					WebTextArticle webTextArticle = new WebTextArticle();
+					str1 = "Tokenized {0}/" + mywtlen + " GPT-2 mini webtext entries";
+					while (true){
+						int a = Interlocked.Increment(ref wtloadprogress);
+						if (a > mywtlen)
+						{
+							return;
+						}
+						a -= 1;
+						JsonConvert.PopulateObject(webtext[a], webTextArticle);
+						int size1 = Transformer.Tokenize(dict1, encbuffer2, webTextArticle.text, maxlen, magicTokenClasses);
+						if (size1 == 0) continue;
+						if (size1 < encbufsize & webTextArticle.ended) encbuffer2[size1++] = 1; //GPT-to-user context switch
+						alldata.Add(encbuffer[..(size1 + 1)].ToArray());
 						if ((a & 4095) == 4095)
 						{
 							Console.WriteLine(str1, a);
@@ -309,11 +336,13 @@ namespace TinyGPT.Decoder.Init.Trainer
 			we.requires_grad = false;
 
 			InitDecoder notchatgpt = new InitDecoder("", we, 2048, 3, tokenClasses2);
-			//Parameter hashedDecoderEngine = nn.Parameter(randn(latentTokenSize, latentTokenSize, ScalarType.BFloat16, CUDA).mul_(1.0 / Math.Sqrt(latentTokenSize)),true);
+			
 
 			//Dropout dropout = torch.nn.Dropout(0.25);
 
 			notchatgpt.to(CUDA, ScalarType.BFloat16);
+			//SGDMomentum sgdMomentum = new SGDMomentum(notchatgpt.state_dict(), 0.9, out ParameterDict momentums);
+			//DoesNothingModule doesNothingModule = new DoesNothingModule("", momentums);
 			we = notchatgpt.wordEmbeddings;
 
 
@@ -325,7 +354,8 @@ namespace TinyGPT.Decoder.Init.Trainer
 
 
 
-			AdaBelief optimizer = new AdaBelief(Misc.GradOnly(parameters).ToArray(), 0.9, 0.999, 1e-9, 1e-15);
+			//AdaBelief optimizer = new AdaBelief(notchatgpt.state_dict(), 0.9, 0.999, 1e-9, 1e-15, out ModuleDict<AdaState> md);
+			//DoesNothingModule doesNothingModule = new DoesNothingModule("", md);
 
 			//LRScheduler learningRateScheduler = ExponentialLR(adam, 0.9999, 0, true);
 
@@ -355,13 +385,12 @@ namespace TinyGPT.Decoder.Init.Trainer
 			questionanswering = null;
 			wikiarticles = null;
 			dict1 = null;
-			wqlen2 = wikisplit;
 			ushort[][] tokenized = alldata.ToArray();
+			webtext = null;
 
 
 
 			int alldatasize = tokenized.Length;
-			int wikidatasize = alldatasize - wqlen2;
 
 			alldata = null;
 
@@ -371,6 +400,11 @@ namespace TinyGPT.Decoder.Init.Trainer
 
 			//double alr = 1e-4;
 
+			double gradclip = 8.0 / tokenclasses;
+			Scalar cliplower = -gradclip;
+			Scalar clipupper = gradclip;
+			Dictionary<int, bool> anticollider = new Dictionary<int, bool>();
+
 			Console.WriteLine("Start training...");
 			for (int z = 0; z < trainingBatches; ++z)
 			{
@@ -378,8 +412,7 @@ namespace TinyGPT.Decoder.Init.Trainer
 
 				using IDisposable d2 = NewDisposeScope();
 				int totalTokensGenerated = 0;
-				int unlabeledTokensGenerated = 0;
-				int labeledTokensGenerated = 0;
+
 				double totalLosses = 0;
 				/*
 				if (z == wordEmbeddingUnlkTreshold)
@@ -389,24 +422,19 @@ namespace TinyGPT.Decoder.Init.Trainer
 				}
 				*/
 
-				while (labeledTokensGenerated <= targetLabeledTokensPerBatch & unlabeledTokensGenerated <= targetUnlabeledTokensPerBatch)
+				while (totalTokensGenerated < targetTokensPerBatch)
 				{
-					int mode;
-					if (labeledTokensGenerated > targetLabeledTokensPerBatch)
-					{
-						mode = 1;
-					}
-					else if (unlabeledTokensGenerated > targetUnlabeledTokensPerBatch)
-					{
-						mode = 0;
-					}
-					else
-					{
-						mode = RandomNumberGenerator.GetInt32(0, 2);
-					}
+
 
 					//FAST non-branching mode selector
-					ushort[] example = tokenized[RandomNumberGenerator.GetInt32(wqlen2 * mode, wqlen2 + (wikidatasize * mode))];
+
+					int index = RandomNumberGenerator.GetInt32(0, alldatasize);
+					for(int i = 0; i < 256; ++i){
+						if (anticollider.TryAdd(index, false)) break;
+						index = RandomNumberGenerator.GetInt32(0, alldatasize);
+					}
+
+					ushort[] example = tokenized[index];
 
 					int len = example.Length;
 					int lenm1 = len - 1;
@@ -420,23 +448,22 @@ namespace TinyGPT.Decoder.Init.Trainer
 
 
 					totalTokensGenerated += lenm1;
-					if (mode == 0)
-					{
-						labeledTokensGenerated += lenm1;
-					}
-					else
-					{
-						unlabeledTokensGenerated += lenm1;
-					}
+
+
+					ReadOnlySpan<ushort> sliced = example.AsSpan(0, lenm1);
+
+					
 
 					using (NewDisposeScope())
 					{
 
 						Tensor x;
-						using (Tensor y = notchatgpt.Forward(example.AsSpan(0, lenm1), 0))
+						using (Tensor y = notchatgpt.Forward(sliced, 0))
 						{
 							x = y.to(float32);
 						}
+
+
 
 
 
@@ -502,18 +529,24 @@ namespace TinyGPT.Decoder.Init.Trainer
 
 				//notchatgpt.L1Regularize(0.1);
 				Console.WriteLine("Optimizer step");
-				optimizer.Step(1e-4, false, false, 0.0, false, 0.00);
-				optimizer.zero_grad();
+				using(no_grad()){
+					foreach(Parameter parameter in  parameters){
+						Tensor grad = (parameter.grad() ?? throw new Exception("Where is my grad? (should not reach here)"));
+						if(parameter.Dimensions > 1) grad.clamp_(cliplower, clipupper);
+						parameter.sub_(grad);
+						grad.zero_();
+					}
+				}
 
+				if (z > 0 & (z % 256 == 0))
+				{
 
-
-				//if (z > 0 & (z % 256 == 0))
-				//{
-
-					//Console.WriteLine("Saving interim policy...");
-					//notchatgpt.save(save + z);
-				//}
-
+					Console.WriteLine("Saving interim policy...");
+					notchatgpt.save(save + z);
+					File.WriteAllText(save + "anticollider" + z, JsonConvert.SerializeObject(anticollider.Keys.ToArray()));
+					//doesNothingModule.save(save + "_optimizer" + z);
+				}
+				//if (z == 1024) return;
 
 
 

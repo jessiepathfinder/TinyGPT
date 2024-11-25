@@ -6,41 +6,84 @@ using System.Threading.Tasks;
 using TorchSharp;
 using TorchSharp.Modules;
 using static TorchSharp.torch;
+using static TorchSharp.torch.nn;
 using static TorchSharp.torch.optim;
 
 namespace TinyGPT.Core
 {
 	public sealed class SGDMomentum : IDisposable
 	{
-		private Memory<Parameter> parameters;
+		private Memory<Tensor> parameters;
 		private readonly Tensor[] state;
 
 		private readonly Scalar bdecay;
 		private readonly double bd;
 		public SGDMomentum(IEnumerable<Parameter> parameters1, double beta1)
 		{
-			Parameter[] tensors = parameters1.ToArray();
+			Tensor[] tensors = Misc.TensorizeParams(parameters1).ToArray();
 			bd = beta1;
 			parameters = tensors.AsMemory();
 			int size = tensors.Length;
 			state = new Tensor[size];
 			for (int i = 0; i < size; ++i)
 			{
-				Parameter param = tensors[i];
+				Tensor param = tensors[i];
 				state[i] = zeros_like(param, device: CPU).DetachFromDisposeScope();
 			}
 			//this.decay3 = 1 - beta1;
 			bdecay = beta1;
 
 		}
+		public SGDMomentum(IReadOnlyDictionary<string,Tensor> rod, double beta1, out ParameterDict momentums)
+		{
+			bd = beta1;
+			bdecay = beta1;
+			Span<char> span1 = stackalloc char[1024];
+			int spanlen = 1024;
+			Queue<Tensor> paramqueue = new Queue<Tensor>();
+			Queue<Tensor> statequeue = new Queue<Tensor>();
+			momentums = new();
+			foreach (KeyValuePair<string,Tensor> kv in rod){
+				Tensor t = kv.Value;
+				if (!t.requires_grad) continue;
+				paramqueue.Enqueue(t);
+				Parameter s = Parameter(zeros_like(t, device: CPU),false);
+				s.DetachFromDisposeScope();
+				statequeue.Enqueue(s);
+				string ky = kv.Key;
+				int kl = ky.Length;
+				int malloc = kl * 2;
+				if (span1.Length < spanlen)
+				{
+					spanlen = malloc * 2;
+					span1 = new char[spanlen];
+				}
+				int ptr = 0;
+				for (int i = 0; i < kl; ++i)
+				{
+					char mychar = ky[i];
+					bool isdot = mychar == '.';
+					if (mychar == '_' | isdot)
+					{
+						span1[ptr++] = '_';
+					}
+					if (isdot) mychar = 'a';
+
+					span1[ptr++] = mychar;
+				}
+				momentums.Add(new string(span1[..ptr]), s);
+			}
+			parameters = paramqueue.ToArray();
+			state = statequeue.ToArray();
+		}
 		public void EraseInvalids()
 		{
-			Memory<Parameter> tensors = parameters;
-			Span<Parameter> span = tensors.Span;
+			Memory<Tensor> tensors = parameters;
+			Span<Tensor> span = tensors.Span;
 			int ctr = 0;
 			for (int i = 0, size = tensors.Length; i < size; ++i)
 			{
-				Parameter tensor = span[i];
+				Tensor tensor = span[i];
 				if (tensor.IsInvalid)
 				{
 					state[i].Dispose();
@@ -57,7 +100,7 @@ namespace TinyGPT.Core
 		}
 		public void zero_grad()
 		{
-			ReadOnlySpan<Parameter> tensors = parameters.Span;
+			ReadOnlySpan<Tensor> tensors = parameters.Span;
 			for (int i = 0, size = tensors.Length; i < size; ++i)
 			{
 				tensors[i].grad()?.zero_();
@@ -82,13 +125,13 @@ namespace TinyGPT.Core
 			Scalar bdecay = this.bdecay;
 
 
-			ReadOnlySpan<Parameter> tensors = parameters.Span;
+			ReadOnlySpan<Tensor> tensors = parameters.Span;
 			using IDisposable disposable = no_grad();
 			for (int i = 0, size = tensors.Length; i < size; ++i)
 			{
 
 				Tensor exp_avg_ = state[i];
-				Parameter param = tensors[i];
+				Tensor param = tensors[i];
 				Device device = param.device;
 				Tensor grad = (param.grad() ?? throw new Exception("Where is my grad???"));
 
@@ -133,10 +176,21 @@ namespace TinyGPT.Core
 			}
 		}
 	}
-	
+	public sealed class AdaState : Module
+	{
+		public readonly Tensor exp_avg;
+		public readonly Tensor exp_avg_sq;
+
+		public AdaState(string name, Tensor exp_avg, Tensor exp_avg_sq) : base(name)
+		{
+			this.exp_avg = exp_avg;
+			this.exp_avg_sq = exp_avg_sq;
+			RegisterComponents();
+		}
+	}
 	public sealed class AdaBelief : IDisposable
 	{
-		private Memory<Parameter> parameters;
+		private Memory<Tensor> parameters;
 		private readonly (Tensor, Tensor)[] state;
 
 		private readonly double beta2;
@@ -150,16 +204,16 @@ namespace TinyGPT.Core
 		private readonly double bd1;
 		private static readonly Scalar one = 1.0;
 
-		private int step;
+		public int step;
 		public AdaBelief(IEnumerable<Parameter> parameters1, double beta1, double beta2, double epsilon, double epsilon2)
 		{
-			Parameter[] tensors = parameters1.ToArray();
+			Tensor[] tensors = parameters1.ToArray();
 			parameters = tensors.AsMemory();
 			int size = tensors.Length;
 			state = new (Tensor, Tensor)[size];
 			for (int i = 0; i < size; ++i)
 			{
-				Parameter param = tensors[i];
+				Tensor param = tensors[i];
 				state[i] = (zeros_like(param, device: CPU).DetachFromDisposeScope(), zeros_like(param, device: CPU).DetachFromDisposeScope());
 			}
 			//this.decay3 = 1 - beta1;
@@ -172,14 +226,64 @@ namespace TinyGPT.Core
 			eps = epsilon;
 			eps2 = epsilon2;
 		}
+		public AdaBelief(IReadOnlyDictionary<string, Tensor> dict, double beta1, double beta2, double epsilon, double epsilon2, out ModuleDict<AdaState> sdict)
+		{
+			Queue<Tensor> tensorqueue = new Queue<Tensor>();
+			Queue<(Tensor exp_avg, Tensor exp_avg_sq) > statequeue = new Queue<(Tensor exp_avg, Tensor exp_avg_sq)>();
+			sdict = new();
+			Span<char> span1 = stackalloc char[1024];
+			int spanlen = 1024;
+			foreach (KeyValuePair<string,Tensor> kvp in dict){
+				Tensor val = kvp.Value;
+				if (!val.requires_grad) continue;
+				tensorqueue.Enqueue(val);
+				Tensor a = zeros_like(val, device: CPU).DetachFromDisposeScope();
+				Tensor b = zeros_like(val, device: CPU).DetachFromDisposeScope();
+				string ky = kvp.Key;
+				int kl = ky.Length;
+				int malloc = kl * 2;
+				if(span1.Length < spanlen){
+					spanlen = malloc * 2;
+					span1 = new char[spanlen];
+				}
+				int ptr = 0;
+				for (int i = 0; i < kl; ++i) {
+					char mychar = ky[i];
+					bool isdot = mychar == '.';
+					if (mychar == '_' | isdot){
+						span1[ptr++] = '_';
+					}
+					if (isdot) mychar = 'a';
+
+					span1[ptr++] = mychar;
+				}
+
+
+				sdict.Add(new string(span1[..ptr]), new AdaState("", a, b));
+				statequeue.Enqueue((a, b));
+			}
+			Tensor[] tensors = tensorqueue.ToArray();
+			parameters = tensors.AsMemory();
+			state = statequeue.ToArray();
+			
+			//this.decay3 = 1 - beta1;
+			beta1s = beta1;
+			beta2s = beta2;
+			decay1 = 1 - beta1;
+			bd1 = beta1;
+			decay2 = 1 - beta2;
+			this.beta2 = beta2;
+			eps = epsilon;
+			eps2 = epsilon2;
+		}
 		public void EraseInvalids()
 		{
-			Memory<Parameter> tensors = parameters;
-			Span<Parameter> span = tensors.Span;
+			Memory<Tensor> tensors = parameters;
+			Span<Tensor> span = tensors.Span;
 			int ctr = 0;
 			for (int i = 0, size = tensors.Length; i < size; ++i)
 			{
-				Parameter tensor = span[i];
+				Tensor tensor = span[i];
 				if (tensor.IsInvalid)
 				{
 					(Tensor a, Tensor b) = state[i];
@@ -198,7 +302,7 @@ namespace TinyGPT.Core
 		}
 		public void zero_grad()
 		{
-			ReadOnlySpan<Parameter> tensors = parameters.Span;
+			ReadOnlySpan<Tensor> tensors = parameters.Span;
 			for (int i = 0, size = tensors.Length; i < size; ++i)
 			{
 				tensors[i].grad()?.zero_();
@@ -228,13 +332,13 @@ namespace TinyGPT.Core
 			//Scalar ss2 = mlr * decay3;
 
 			Scalar n1 = -1;
-			ReadOnlySpan<Parameter> tensors = parameters.Span;
+			ReadOnlySpan<Tensor> tensors = parameters.Span;
 			using IDisposable disposable = no_grad();
 			for (int i = 0, size = tensors.Length; i < size; ++i)
 			{
 
 				(Tensor exp_avg, Tensor exp_avg_sq) mystate = state[i];
-				Parameter param = tensors[i];
+				Tensor param = tensors[i];
 				Device device = param.device;
 				Tensor grad = (param.grad() ?? throw new Exception("Where is my grad???"));
 

@@ -1,4 +1,5 @@
 ﻿using Newtonsoft.Json;
+using System.IO.Compression;
 using System.Runtime.Serialization.Formatters;
 using System.Text;
 using System.Transactions;
@@ -94,6 +95,7 @@ namespace TinyGPT.Chatbot
 			set_default_dtype(ScalarType.BFloat16);
 			FullGPTDecoderUnit themodel;
 			int maxcontext;
+			bool loadSPD;
 			switch (model)
 			{
 				case "nano-v2":
@@ -106,6 +108,7 @@ namespace TinyGPT.Chatbot
 						magicTokenClasses = 4;
 						tokenclasses += magicTokenClasses + 1;
 						themodel = new GPTDecoderUnitV1_1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, 0.0, 1e-6, 1024, 0.0, 1.0, 1.0, 0.0, tokenclasses, 1.0, 128, 0.0, 1, 2048, 0.0, 4);
+						loadSPD = false;
 					}
 					break;
 				case "nano-v1":
@@ -118,10 +121,11 @@ namespace TinyGPT.Chatbot
 						magicTokenClasses = 4;
 						tokenclasses += magicTokenClasses + 1;
 						themodel = new GPTDecoderUnitV1("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, 0.0, 1e-6, 1024, 0.0, 1.0, 1.0, 0.0, tokenclasses, 1.0, 128, 0.0, 1, 2048, 0.0);
-
+						loadSPD = false;
 					}
 					break;
 				case "nano-v1_3":
+				case "nano-v1_3_1":
 
 					{
 						const int latentTokenSize = 2048;
@@ -130,8 +134,8 @@ namespace TinyGPT.Chatbot
 						const int firstTierAttentionDepth = 5;
 						magicTokenClasses = 3;
 						tokenclasses += magicTokenClasses + 1;
-						themodel = new GPTDecoderUnitV1_3("", latentTokenSize, attentionHeads, firstTierAttentionDepth, 1e-7, 1.0, 1.0, 0.0, tokenclasses, 1.0, 128, 0.0, 1, 2048, 0.0, new InitDecoder("", empty(tokenclasses, latentTokenSize), 2048, 3, tokenclasses));
-
+						themodel = new GPTDecoderUnitV1_3("", latentTokenSize, attentionHeads, firstTierAttentionDepth, 1e-7, 1.0, 1.0, 0.0, tokenclasses, 1.0, 128, 0.0, 1, 2048, 0.0, new InitDecoder("", empty(tokenclasses, latentTokenSize), 2048, 3, tokenclasses), 1);
+						loadSPD = false;
 					}
 					break;
 				case "nano-v1_2":
@@ -144,7 +148,7 @@ namespace TinyGPT.Chatbot
 						magicTokenClasses = 3;
 						tokenclasses += magicTokenClasses + 1;
 						themodel = new GPTDecoderUnitV1_2("TinyGPT", latentTokenSize, attentionHeads, firstTierAttentionDepth, 1e-7, 1.0, 1.0, 0.0, tokenclasses, 1.0, 128, 0.0, 2, 2048, 0.0, 2, empty(tokenclasses, latentTokenSize), false, false, 0);
-
+						loadSPD = false;
 					}
 					break;
 				default:
@@ -162,12 +166,18 @@ namespace TinyGPT.Chatbot
 				parameter.requires_grad = false;
 			}
 			themodel.eval();
-			if(Environment.GetEnvironmentVariable("TinyGPT_booster_enabled") == "1"){
-				
-			}
+			
 			if (usecuda)
 			{
 				themodel.to(CUDA);
+			}
+
+			Dictionary<ushort, double>?[]? spd = null;
+			if(loadSPD){
+				using Stream str = new BufferedStream(new DeflateStream(new FileStream(datadir + "SimpleDecoder.model", FileMode.Open, FileAccess.Read, FileShare.Read, 65536 * 256, FileOptions.SequentialScan), CompressionMode.Decompress, false), 256 * 65536);
+				spd = Misc.LoadSimpleDecoder(tokenclasses, str);
+			} else{
+				spd = null;
 			}
 			//4 magic token types
 
@@ -207,9 +217,9 @@ namespace TinyGPT.Chatbot
 					Console.WriteLine("too big!");
 					continue;
 				}
-				buffer[intokens] = 0; //[STARTGPT]
-									  //int[] lastRepeat = new int[tokenclasses];
-				//int[] lastRepeat = new int[tokenclasses];
+				buffer[intokens] = 0;
+
+				ushort prevtkn = 0;
 				for (int i = intokens + 1, i2 = 0; i < maxcontext; ++i, ++i2)
 				{
 					
@@ -222,6 +232,13 @@ namespace TinyGPT.Chatbot
 					{
 						tensor = x.to(float64);
 						//(tensor, indices) = x.sort(descending: true);
+					}
+					double[]? doubles = spd is null ? null : Misc.TrySimpleDecode(spd, tokenclasses, prevtkn);
+					if (doubles is { })
+					{
+						using Tensor x = torch.tensor(doubles, tensor.dtype, tensor.device);
+						x.log_();
+						tensor.add_(x);
 					}
 					using (Tensor x = tensor)
 					{
@@ -241,12 +258,13 @@ namespace TinyGPT.Chatbot
 						tensor[myr] = 0.0;
 
 					}
+					
 					using (Tensor x = tensor)
 					{
 						(tensor, indices) = x.sort(0, true);
 					}
-					using (Tensor x = tensor)
-					{
+					if(usecuda){
+						using Tensor x = tensor;
 						tensor = x.cpu();
 					}
 					tk *= topk[tkwindow] * temperature;
@@ -259,35 +277,36 @@ namespace TinyGPT.Chatbot
 					{
 						++tkwindow;
 					}
-					ushort bestindex;
 					using (indices)
 					{
 						int z = 0;
 						using (tensor){
-							
+						repick:
 							for (; z < tokenclasses & tk > 0.0; ++z)
 							{
 								using Tensor tt = tensor[z];
 								tk -= tt.ToScalar().ToDouble();
 							}
+							if (z == tokenclasses) goto repick;
 						}
 						using Tensor tt2 = indices[z];
-						bestindex = (ushort)tt2.ToScalar().ToInt32();
+						prevtkn = (ushort)tt2.ToScalar().ToInt32();
 					}
 					
 
-					if (bestindex == 1)
+					if (prevtkn == 1)
 					{
 						break;
 					}
 					//lastRepeat[bestindex] = i2;
-					taboo[i % 4] = bestindex;
-					buffer[i] = bestindex;
-					string? str = decode[bestindex];
+					taboo[i % 4] = prevtkn;
+					buffer[i] = prevtkn;
+					
+					string? str = decode[prevtkn];
 
 					if (str is null)
 					{
-						str = " invalid_word_" + bestindex;
+						str = " invalid_word_" + prevtkn;
 					}
 					Console.Write(str);
 				}

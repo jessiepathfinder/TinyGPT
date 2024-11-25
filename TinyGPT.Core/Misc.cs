@@ -1,6 +1,4 @@
-﻿using Google.Protobuf.WellKnownTypes;
-using ICSharpCode.SharpZipLib.BZip2;
-using System;
+﻿using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
@@ -29,6 +27,81 @@ namespace TinyGPT.Core
 	}
 	public static class Misc
 	{
+		public static Dictionary<ushort,double>?[] LoadSimpleDecoder(int tokenclasses, Stream str){
+			Dictionary<ushort, double>?[] arr = new Dictionary<ushort, double>[tokenclasses];
+			Span<byte> span = stackalloc byte[10];
+			ref ushort upf = ref MemoryMarshal.Cast<byte, ushort>(span)[0];
+			ref double upd = ref MemoryMarshal.Cast<byte, double>(span.Slice(2, 8))[0];
+
+			
+			while(true){
+				str.ReadExactly(span);
+				ushort ms = upf;
+				if (ms == 1) return arr;
+				Dictionary<ushort, double> dict = new Dictionary<ushort, double>();
+				arr[ms] = dict;
+				while(true){
+					str.ReadExactly(span);
+					ushort ms1 = upf;
+					if (ms1 == 0) break;
+					dict.Add(ms1, upd);
+				}
+			}
+		}
+		public static double[,] SimpleDecodePreLog(Dictionary<ushort, double>?[] spd, ReadOnlySpan<ushort> input)
+		{
+			int len = input.Length;
+			int tcz = spd.Length;
+			double[,] doubles = new double[len, tcz];
+			for (int i = 0; i < len; ++i)
+			{
+				Dictionary<ushort, double>? dict = spd[input[i]];
+				if (dict is null)
+				{
+					for (int z = 0; z < tcz;) doubles[i, z++] = 1.0;
+				}
+				else
+				{
+					foreach (KeyValuePair<ushort, double> kvp in dict)
+					{
+						doubles[i, kvp.Key] = kvp.Value;
+					}
+				}
+			}
+			return doubles;
+		}
+		public static float[,] SimpleDecodePreLogFloat(Dictionary<ushort, double>?[] spd, ReadOnlySpan<ushort> input)
+		{
+			int len = input.Length;
+			int tcz = spd.Length;
+			float[,] doubles = new float[len, tcz];
+			for (int i = 0; i < len; ++i)
+			{
+				Dictionary<ushort, double>? dict = spd[input[i]];
+				if (dict is null)
+				{
+					for (int z = 0; z < tcz;) doubles[i, z++] = 1.0f;
+				}
+				else
+				{
+					foreach (KeyValuePair<ushort, double> kvp in dict)
+					{
+						doubles[i, kvp.Key] = (float)kvp.Value;
+					}
+				}
+			}
+			return doubles;
+		}
+		public static double[]? TrySimpleDecode(Dictionary<ushort, double>?[] spd, int tokenClasses, ushort prev){
+			Dictionary<ushort, double>? dict = spd[prev];
+			if (dict is null) return null;
+			double[] doubles = new double[tokenClasses];
+			foreach (KeyValuePair<ushort, double> kvp in dict)
+			{
+				doubles[kvp.Key] = (float)kvp.Value;
+			}
+			return doubles;
+		}
 		public static Dictionary<string, OptimizedTokenizerEntry> OptimizeDictionary(IReadOnlyDictionary<string, ushort> input){
 			string[] keys = input.Keys.ToArray();
 			int len = keys.Length;
@@ -51,7 +124,7 @@ namespace TinyGPT.Core
 		}
 		private static readonly NLLLoss nlloss = new NLLLoss(reduction: Reduction.None);
 		private static readonly Scalar one = 1;
-		public static Tensor FastCrossEntropyLoss(Tensor input, Tensor logits, double squareboost, bool average, Tensor? boost = null, double gamma = 0.0, bool allow_unsupervised = false) {
+		public static Tensor FastCrossEntropyLoss(Tensor input, Tensor logits, double squareboost, bool average, Tensor? boost = null, double gamma = 0.0, bool allow_unsupervised = false, bool numfix = false) {
 			using(NewDisposeScope()){
 				Tensor z = input.logsumexp(-1, false);
 				Tensor x;
@@ -95,7 +168,10 @@ namespace TinyGPT.Core
 						}
 					}
 				}
-
+				if(numfix){
+					using Tensor y = x;
+					x = torch.nan_to_num(y, 0.0, 0.0, 0.0);
+				}
 
 				if (squareboost > 0)
 				{
@@ -107,6 +183,7 @@ namespace TinyGPT.Core
 					using Tensor y = x;
 					x = y.mul(boost);
 				}
+				
 				if (average)
 				{
 					using Tensor y = x;
@@ -319,6 +396,13 @@ namespace TinyGPT.Core
 			foreach (Parameter parameter in parameters){
 				if (parameter.requires_grad)
 					yield return parameter;
+			}
+		}
+		public static IEnumerable<Tensor> TensorizeParams(IEnumerable<Parameter> parameters)
+		{
+			foreach (Parameter parameter in parameters)
+			{
+				yield return parameter;
 			}
 		}
 		public static Tensor GenerateKaimingQueryMatrix(int inputs, int outputs, int heads, ScalarType? scalarType = null, Device? device = null, bool require_grad = false, double initial_gain = 1.0){
