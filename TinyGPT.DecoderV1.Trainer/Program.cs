@@ -1,4 +1,5 @@
 ﻿using Newtonsoft.Json;
+using System;
 using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
@@ -259,7 +260,7 @@ namespace TinyGPT.DecoderV1.Trainer
 							continue;
 						}
 						int size2 = Transformer.Tokenize(dict1, encbuffer2, wikititle, maxlen, magicTokenClasses);
-						if (size2 == maxContextSize)
+						if (size2 > 255)
 						{
 							continue;
 						}
@@ -270,10 +271,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 						encbuffer2[size2++] = 2; //wikipedia article retrieval task
 
-						if (size2 == maxContextSize)
-						{
-							continue;
-						}
+						
 						//Span<ushort> encbuffer3 = encbuffer2[size2..];
 
 						string[] section_texts = wikipediaArticle.section_texts;
@@ -364,13 +362,13 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 
-			InitDecoder initDecoder = new InitDecoder("", empty(tokenclasses, latentTokenSize), 2048, 3, tokenClasses2);
+			InitDecoderV2 initDecoder = new InitDecoderV2("", empty(tokenclasses, latentTokenSize), 2048, tokenClasses2);
 			initDecoder.Hack2();
 			initDecoder.to(bfloat16);
-			initDecoder.load(datadir + "initdecoder.model");
+			initDecoder.load(datadir + "initdecoder-v2.model");
 			
 
-			GPTDecoderUnitV1_3 notchatgpt = new GPTDecoderUnitV1_3("", latentTokenSize, attentionHeads, firstTierAttentionDepth, 1e-7, 1.0, 1.0, 0.125, tokenclasses, 1.0, 128, 0.125, 1, 2048, 0.125, initDecoder, 1);
+			GPTDecoderUnitV1_4 notchatgpt = new GPTDecoderUnitV1_4("", latentTokenSize, attentionHeads, firstTierAttentionDepth, 1e-7, 1.0, 1.0, 0.125, tokenclasses, 1.0, 128, 0.125, 1, 2048, 0.125, initDecoder, 1, 3, 2048);
 			//Parameter hashedDecoderEngine = nn.Parameter(randn(latentTokenSize, latentTokenSize, ScalarType.BFloat16, CUDA).mul_(1.0 / Math.Sqrt(latentTokenSize)),true);
 
 			//Dropout dropout = torch.nn.Dropout(0.25);
@@ -378,7 +376,11 @@ namespace TinyGPT.DecoderV1.Trainer
 			notchatgpt.to(CUDA, ScalarType.BFloat16);
 
 
-
+			ReadOnlyMemory<(ushort, double)>[] readOnlyMemories;
+			using (BufferedStream dfs = new BufferedStream(new DeflateStream(new FileStream(datadir + "SimpleDecoder.model", FileMode.Open, FileAccess.Read, FileShare.Read, 16777216, FileOptions.SequentialScan), CompressionMode.Decompress), 16777216))
+			{
+				readOnlyMemories = Misc.LoadSimpleDecoderV2(tokenclasses, dfs);
+			}
 
 
 			IEnumerable<Parameter> parameters = Misc.GradOnly(notchatgpt.parameters());
@@ -435,7 +437,6 @@ namespace TinyGPT.DecoderV1.Trainer
 
 
 			Console.WriteLine("Start training...");
-			bool notDisabledDropout = true;
 			for (int z = 0; z < trainingBatches; ++z)
 			{
 				Console.WriteLine("Train batch #" + z);
@@ -484,18 +485,29 @@ namespace TinyGPT.DecoderV1.Trainer
 						unlabeledTokensGenerated += tokensGenerated;
 					}
 
+					split -= 2;
+					ReadOnlySpan<ushort> spanny = example.AsSpan(1, lenm1 - 2);
+
 					using (NewDisposeScope())
 					{
 
+
 						Tensor x;
-						using (Tensor y = notchatgpt.Forward(example.AsSpan(1, lenm1 - 2), split - 2, 0.0))
+						using (Tensor y = notchatgpt.Forward(spanny, split))
 						{
 							x = y.to(float32);
+						}
+						float[,] floats = Misc.SimpleDecodePreLogV2Float(readOnlyMemories, spanny.Slice(split), true);
+
+						using (Tensor y = x, z1 = tensor(floats, float32, CUDA))
+						{
+							z1.log_();
+							x = y.add(z1);
 						}
 
 						using (Tensor target = tensor(cputarget2, ScalarType.Int64, CUDA), y = x)
 						{
-							x = Misc.FastCrossEntropyLoss(y, target, 0.0, false, null, 0.0, false, false);
+							x = Misc.FastCrossEntropyLoss(y, target, 0.0, false, null, 0.0, false, true);
 						}
 
 						using (x)
@@ -511,10 +523,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 				totalLosses /= totalTokensGenerated;
 
-				if(totalLosses < 4.0 & notDisabledDropout){
-					CustomActivations.threadPrivateDropoutDisableHack = true;
-					notDisabledDropout = false;
-				}
+
 
 				Console.WriteLine("Average loss per token: " + totalLosses);
 
@@ -571,7 +580,7 @@ namespace TinyGPT.DecoderV1.Trainer
 					notchatgpt.save(save + z);
 					doesNothingModule.save(save + "_optimizer" + z);
 				}
-				//if (z == 1024) break;
+				//if (z == 1024) return;
 
 
 

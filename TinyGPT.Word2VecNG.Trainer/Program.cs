@@ -8,6 +8,8 @@ using TorchSharp;
 using System.Security.Cryptography;
 using TorchSharp.Modules;
 using Transformer = TinyGPT.Core.Transformer;
+using System.Security;
+using System.Runtime.ExceptionServices;
 
 namespace TinyGPT.Word2VecNG.Trainer
 {
@@ -17,7 +19,7 @@ namespace TinyGPT.Word2VecNG.Trainer
 
 		//hyperparameters
 		private const int latentTokenSize = 2048;
-		private const int maxContextSize = 4096;
+		private const int maxContextSize = 65536 * 256;
 		private const int trainingBatches = 2048;
 		private const int magicTokenClasses = 3;
 		private const int minimumInputTokens = 2;
@@ -29,12 +31,9 @@ namespace TinyGPT.Word2VecNG.Trainer
 
 
 		//private const double decoupledWeightDecay = 0.999;
-		private const double lr1 = 224.1851913 / 2.0;
+		private const double lr1 = 2241.851913;
 		private const double lr3 = 1e-4;
 		private const double decoupledWeightDecay = 0.99;
-		private const int batchWidthSkipGram = 512;
-		private const int batchHeightSkipGram = 512;
-		private const double skipGramLossAmplify = 10.0;
 		private const double L2Regularization = 1e-4;
 		//private const double decoupledWeightDecay = 0.99;
 
@@ -56,7 +55,6 @@ namespace TinyGPT.Word2VecNG.Trainer
 		}
 		private static void GlobalNorm(Tensor a, Tensor b, Tensor c)
 		{
-			Console.WriteLine("Global normalization...");
 			Tensor y;
 			using (Tensor x = a.transpose(0, 1)) y = x.matmul(b);
 			using (Tensor x = y) y = x.transpose(0, 1);
@@ -74,6 +72,9 @@ namespace TinyGPT.Word2VecNG.Trainer
 		{
 			string datadir = args[0];
 			string save = args[1];
+			string save_encoder = save + "encoder";
+			string save_decoder = save + "decoder";
+			string save_optimizer = save + "optimizer";
 			if (!datadir.EndsWith(Path.DirectorySeparatorChar))
 			{
 				datadir += Path.DirectorySeparatorChar;
@@ -144,7 +145,7 @@ namespace TinyGPT.Word2VecNG.Trainer
 				{
 					int za = az;
 					StringBuilder sb = new StringBuilder("Tokenized ");
-					Span<ushort> encbuffer2 = stackalloc ushort[maxContextSize];
+					Span<ushort> encbuffer2 = new ushort[maxContextSize];
 					int mywqlen = wqlength;
 					string str1 = "Tokenized {0}/" + mywqlen + " question-answer pairs";
 					int mywikilen = wikilen;
@@ -348,32 +349,30 @@ namespace TinyGPT.Word2VecNG.Trainer
 			model.requires_grad = true;
 			Parameter decoder = nn.Parameter(randn(new long[] { latentTokenSize, tokenclasses }, ScalarType.BFloat16, CUDA).div_(stc));
 
-			Parameter skipGramWeight = nn.Parameter(randn(new long[] { latentTokenSize, tokenclasses }, ScalarType.BFloat16, CUDA).div_(stc));
-			Parameter skipGramBias = nn.Parameter(zeros(tokenclasses, bfloat16, CUDA));/*.fill_(Math.Log((tokenclasses - 10) / 10.0)))*/
+
 			//Parameter skipGramWeightFtr = nn.Parameter(randn(new long[] { latentTokenSize, tokenclasses }, ScalarType.BFloat16, CUDA).div_(stc));
 			//Parameter skipGramBiasFtr = nn.Parameter(zeros(tokenclasses, bfloat16, CUDA));/*.fill_(Math.Log((tokenclasses - 10) / 10.0)))*/
 
-			AdaBelief adabelief = new AdaBelief(new Parameter[] { skipGramWeight, decoder, skipGramBias }, 0.9, 0.999, 1e-9, 1e-15);
-
-
+			AdaBelief adabelief = new AdaBelief(new Dictionary<string, Tensor>() { {"decoder" ,decoder} }, 0.9, 0.999, 1e-9, 1e-15,out ModuleDict<AdaState> moduleDict);
+			DoesNothingModule dnm = new DoesNothingModule("", moduleDict);
+			ReadOnlyMemory<(ushort, double)>[] readOnlyMemories;
+			using (BufferedStream dfs = new BufferedStream(new DeflateStream(new FileStream(datadir + "SimpleDecoder.model", FileMode.Open, FileAccess.Read, FileShare.Read, 16777216, FileOptions.SequentialScan), CompressionMode.Decompress), 16777216))
+			{
+				readOnlyMemories = Misc.LoadSimpleDecoderV2(tokenclasses, dfs);
+			}
 
 			Scalar wd = decoupledWeightDecay;
 			long[] dimlist = new long[] { 0 };
 			long[] labels = new long[batchWidth];
 			//long[] skipGramInputs = new long[batchWidthSkipGram];
-			long[,] inputs = new long[4, batchWidth];
-			long[] skipGramInputs = new long[batchWidthSkipGram];
+			long[,] inputs = new long[10,batchWidth];
 			Scalar epsilon = 1e-7;
-			Scalar ld = batchWidth * batchHeight;
+			double ld = batchWidth * batchHeight;
 			Scalar slr1 = -lr1;
 			Scalar lrs = L2Regularization;
-
+			Span<ushort> reflector = stackalloc ushort[batchWidth];
 			
-			double tmd = 10.0 / (tokenclasses);
-			double tmd2 = (1.0 / (1.0 - tmd));
-			long tmd3 = (batchHeightSkipGram * ((long)batchWidthSkipGram) * (long)tokenclasses);
-			Scalar ld2 = (tmd2 * skipGramLossAmplify) / tmd3;
-			Scalar ld3 = (((1.0 / tmd) - tmd2) * skipGramLossAmplify) / (tmd3 * 2);
+
 			
 
 			//Scalar ld2 = -(batchWidthSkipGram * batchHeightSkipGram * 10);
@@ -432,126 +431,74 @@ namespace TinyGPT.Word2VecNG.Trainer
 			//Tensor tClassCountsd = tensor(classcountsd, ScalarType.Float32, CUDA, false);
 			//using (Tensor x = tClassCountsd) tClassCountsd = ((totalTokens - (alldatasize * 4)) / (double)(tokenclasses * ((long)batchWidth) * batchHeight)) / x;
 			tClassCounts.unsqueeze_(1);
-			Tensor normy;
 			Scalar stt = totalTokens;
 			Tensor normMask;
 			using (no_grad())
 			{
-				normMask = tClassCounts.clamp_max(1);
+				normMask = tClassCounts.clamp_max(one);
 
-				normy = tClassCounts.div(stt);
-
-				GlobalNorm(model, normy, normMask);
+				tClassCounts.div_(stt);
+				Console.WriteLine("Global normalization...");
+				GlobalNorm(model, tClassCounts, normMask);
 			}
-			tClassCounts.clamp_min_(one);
-			tClassCounts.div_(stt);
 
-
+			
 
 
 
 			for (int z = 0; z < trainingBatches; ++z)
 			{
+				int[] counters = new int[tokenclasses];
 				Console.WriteLine("Training batch #" + z);
 				double totalLosses = 0.0;
 				for (int y = 0; y < batchHeight; ++y)
 				{
 					
-
+					
 
 					for (int i = 0; i < batchWidth; ++i)
 					{
-						ReadOnlySpan<ushort> thething = GetSubSlice(tokenizedNG, totalTokens, 5);
-						inputs[0, i] = thething[0];
-						inputs[1, i] = thething[1];
-						labels[i] = thething[2];
-						inputs[2, i] = thething[3];
-						inputs[3, i] = thething[4];
+					repick:
+						ReadOnlySpan<ushort> thething = GetSubSlice(tokenizedNG, totalTokens, 11);
+						ushort center = thething[5];
+						if (center == 0 | center == 2) goto repick;
+						labels[i] = center;
+						ushort prevboost = thething[4];
+						if (readOnlyMemories[prevboost].Length == 0) goto repick;
+						reflector[i] = prevboost;
+						for (int n = 0,s1 = 0; n < 11; ++n){
+							if(n == 5){
+								s1 = 1;
+							} else{
+								ushort val = thething[n];
+								inputs[n - s1,i] = val;
+								++counters[val];
+							}
+						}
 					}
 					Tensor x;
 					using (Tensor t = tensor(inputs, ScalarType.Int64, CUDA)) x = model[t];
 
 					using (Tensor t = x) x = t.mean(dimlist, false);
-					//using (Tensor t = x) x = t.arctan();
-					//using (Tensor t = x) x = nn.functional.dropout(t, 0.25);
-					using (Tensor t = x, t2 = randn_like(t)) x = t.add(t2);
-					//using (Tensor t = x) x = t.to(float32);
-					//using (Tensor t = x) x = CustomActivations.Norm(t, epsilon);
-					//using (Tensor t = x) x = t.to(bfloat16);
-
 					using (Tensor t = x) x = t.matmul(decoder);
 					using (Tensor t = x) x = t.to(float32);
-					using (Tensor t = x, t2 = tensor(labels, ScalarType.Int64, CUDA)) x = Misc.FastCrossEntropyLoss(t, t2, 0.0, false);
-					using (Tensor t = x) x = t.div(ld);
+
+					float[,] floats = Misc.SimpleDecodePreLogV2Float(readOnlyMemories, reflector, true);
+					using (Tensor t = x, t2 = tensor(floats, float32, CUDA)) x = t.add(t2.log_());
+
+					using (Tensor t = x, t2 = tensor(labels, ScalarType.Int64, CUDA)) x = Misc.FastCrossEntropyLoss(t, t2, 0.0, false, null, 0.0, false, true);
+					//using (Tensor t = x) x = t.div(ld);
 					using (x)
 					{
 						x.backward();
 						totalLosses += x.ToScalar().ToDouble();
 					}
 				}
-				Console.WriteLine("Average CBOW training loss: " + totalLosses);
+				Console.WriteLine("Average CBOW training loss: " + (totalLosses / ld));
 
 
 
-				totalLosses = 0.0;
-				for (int y = 0; y < batchHeightSkipGram; ++y)
-				{
-
-					byte[,] mask = new byte[batchWidthSkipGram, tokenclasses];
-					for (int i = 0; i < batchWidthSkipGram; ++i)
-					{
-						ReadOnlySpan<ushort> thething = GetSubSlice(tokenizedNG, totalTokens, 11);
-						mask[i, thething[0]] = 2;
-						mask[i, thething[1]] = 2;
-						mask[i, thething[2]] = 2;
-						mask[i, thething[3]] = 2;
-						mask[i, thething[4]] = 2;
-
-
-
-						skipGramInputs[i] = thething[5];
-						mask[i, thething[6]] = 2;
-						mask[i, thething[7]] = 2;
-						mask[i, thething[8]] = 2;
-						mask[i, thething[9]] = 2;
-						mask[i, thething[10]] = 2;
-					}
-
-					Tensor x;
-					using (Tensor t = tensor(skipGramInputs, ScalarType.Int64, CUDA)) x = model[t];
-					using (Tensor t = x, t2 = randn_like(t)) x = t.add(t2);
-					//
-					//using (Tensor t = x) x = nn.functional.dropout(x, 0.5);
-					//using (Tensor t = x) x = t.to(float32);
-					//using (Tensor t = x) x = CustomActivations.Norm(t, epsilon);
-					//using (Tensor t = x) x = CustomActivations.HalfNorm(t);
-					//using (Tensor t = x) x = t.to(bfloat16);
-					using (Tensor t = x) x = t.matmul(skipGramWeight);
-					using (Tensor t = x) x = t.add(skipGramBias);
-					Tensor t3;
-					using (Tensor t2 = tensor(mask, ScalarType.BFloat16, CUDA))
-					{
-						t3 = empty_like(t2).fill_(ld2);
-						t3.add_(t2, ld3);
-						using Tensor t = x;
-						x = t.mul(t2.sub_(one));
-					}
-
-					using (Tensor t = x) x = t.softplus();
-					using (t3)
-					{
-						using Tensor t = x;
-						x = t.mul(t3);
-					}
-					using (Tensor t = x) x = t.sum(ScalarType.Float64);
-					using (x)
-					{
-						x.backward();
-						totalLosses += x.ToScalar().ToDouble();
-					}
-				}
-
-				Console.WriteLine("Average skip-gram training loss: " + totalLosses);
+				
 
 
 
@@ -559,7 +506,6 @@ namespace TinyGPT.Word2VecNG.Trainer
 				using (no_grad())
 				{
 					Misc.L2RegularizeIMPL(decoder, lrs);
-					Misc.L2RegularizeIMPL(skipGramWeight, lrs);
 				}
 
 				Console.WriteLine("Optimizer step (Decoder)...");
@@ -569,18 +515,43 @@ namespace TinyGPT.Word2VecNG.Trainer
 					adabelief.zero_grad();
 					Console.WriteLine("Optimizer step (Encoder)...");
 					Tensor mgrad = model.grad() ?? throw new Exception("Model does not have grad (should not reach here)");
-					model.addcdiv_(mgrad, tClassCounts, slr1);
+					using(Tensor tempdiv = tensor(counters, bfloat16, CUDA)){
+						tempdiv.clamp_min_(one);
+						tempdiv.unsqueeze_(1);
+						model.addcdiv_(mgrad, tempdiv, slr1);
+					}
+					
 					model.mul_(wd);
 					mgrad.zero_();
 				}
-
+				if(z % 256 == 0 & z > 0){
+					Console.WriteLine("Saving interim policy...");
+					torch.save(model, save_encoder + z);
+					torch.save(decoder, save_decoder + z);
+					dnm.save(save_optimizer + z);
+				}
+				//if (z == 1024) return;
 			}
-			using (no_grad()) GlobalNorm(model, normy, normMask);
+			Console.WriteLine("Normalizing policy...");
+			torch.set_grad_enabled(false);
+			GlobalNorm(model, tClassCounts, normMask);
+
+			using(Tensor temp = torch.empty(latentTokenSize, latentTokenSize, bfloat16, CUDA)){
+				for (int i = 0; i < 15; ++i)
+				{
+					torch.nn.init.normal_(temp);
+					using (Tensor x = model) model = x.matmul(temp);
+					GlobalNorm(model, tClassCounts, normMask);
+				}
+				torch.nn.init.normal_(temp);
+				using (Tensor x = model) model = x.matmul(temp);
+			}
+			GlobalNorm(model, tClassCounts, normMask);
+
 			Console.WriteLine("Saving policy...");
 			model.save(save);
 		}
 		private static ReadOnlySpan<ushort> GetSubSlice((ushort[] arr, int i)[] ushorts,int total, int size){
-			int i = 0;
 #pragma warning disable CS8619 // Nullability of reference types in value doesn't match target type.
 			(ushort[],int) xr = (null,RandomNumberGenerator.GetInt32(0, total));
 #pragma warning restore CS8619 // Nullability of reference types in value doesn't match target type.

@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading.Tasks;
 using TorchSharp;
 using TorchSharp.Modules;
+using static Tensorboard.ApiDef.Types;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 using static TorchSharp.torch.nn.functional;
@@ -35,9 +36,12 @@ namespace TinyGPT.Core
 
 			
 			while(true){
-				str.ReadExactly(span);
+				try{
+					str.ReadExactly(span);
+				} catch(EndOfStreamException){
+					return arr;
+				}
 				ushort ms = upf;
-				if (ms == 1) return arr;
 				Dictionary<ushort, double> dict = new Dictionary<ushort, double>();
 				arr[ms] = dict;
 				while(true){
@@ -48,6 +52,37 @@ namespace TinyGPT.Core
 				}
 			}
 		}
+		public static ReadOnlyMemory<(ushort token, double probability)>[] LoadSimpleDecoderV2(int tokenclasses, Stream str)
+		{
+			ReadOnlyMemory<(ushort, double)>[] arr = new ReadOnlyMemory<(ushort, double)>[tokenclasses];
+			Span<byte> span = stackalloc byte[10];
+			ref ushort upf = ref MemoryMarshal.Cast<byte, ushort>(span)[0];
+			ref double upd = ref MemoryMarshal.Cast<byte, double>(span.Slice(2, 8))[0];
+
+
+			while (true)
+			{
+				try
+				{
+					str.ReadExactly(span);
+				}
+				catch (EndOfStreamException)
+				{
+					return arr;
+				}
+				ushort ms = upf;
+				Queue<(ushort, double)> queue = new Queue<(ushort, double)>();
+				while (true)
+				{
+					str.ReadExactly(span);
+					ushort ms1 = upf;
+					if (ms1 == 0) break;
+					queue.Enqueue((ms1, upd));
+				}
+				arr[ms] = queue.ToArray();
+			}
+		}
+
 		public static double[,] SimpleDecodePreLog(Dictionary<ushort, double>?[] spd, ReadOnlySpan<ushort> input)
 		{
 			int len = input.Length;
@@ -70,6 +105,58 @@ namespace TinyGPT.Core
 			}
 			return doubles;
 		}
+		public static double[,] SimpleDecodePreLogV2(ReadOnlySpan<ReadOnlyMemory<(ushort token, double probability)>> spd, ReadOnlySpan<ushort> input, bool strict)
+		{
+			int len = input.Length;
+			int tcz = spd.Length;
+			double[,] doubles = new double[len, tcz];
+			for (int i = 0; i < len; ++i)
+			{
+				ReadOnlyMemory<(ushort , double )> dict = spd[input[i]];
+				int len1 = dict.Length;
+				if (len1 == 0)
+				{
+					if (strict) throw new Exception("Attempted to decode unsupported token!");
+					for (int z = 0; z < tcz;) doubles[i, z++] = 1.0;
+				}
+				else
+				{
+					ReadOnlySpan<(ushort, double)> ros = dict.Span;
+					for(int  z = 0; z < len1; ){
+						(ushort index, double probability) = ros[z++];
+						doubles[i, index] = probability;
+					}
+				}
+			}
+			return doubles;
+		}
+		public static float[,] SimpleDecodePreLogV2Float(ReadOnlySpan<ReadOnlyMemory<(ushort token, double probability)>> spd, ReadOnlySpan<ushort> input, bool strict)
+		{
+			int len = input.Length;
+			int tcz = spd.Length;
+			float[,] doubles = new float[len, tcz];
+			for (int i = 0; i < len; ++i)
+			{
+				ReadOnlyMemory<(ushort, double)> dict = spd[input[i]];
+				int len1 = dict.Length;
+				if (len1 == 0)
+				{
+					if (strict) throw new Exception("Attempted to decode unsupported token!");
+					for (int z = 0; z < tcz;) doubles[i, z++] = 1.0f;
+				}
+				else
+				{
+					ReadOnlySpan<(ushort, double)> ros = dict.Span;
+					for (int z = 0; z < len1;)
+					{
+						(ushort index, double probability) = ros[z++];
+						doubles[i, index] = (float)probability;
+					}
+				}
+			}
+			return doubles;
+		}
+
 		public static float[,] SimpleDecodePreLogFloat(Dictionary<ushort, double>?[] spd, ReadOnlySpan<ushort> input)
 		{
 			int len = input.Length;
@@ -99,6 +186,20 @@ namespace TinyGPT.Core
 			foreach (KeyValuePair<ushort, double> kvp in dict)
 			{
 				doubles[kvp.Key] = (float)kvp.Value;
+			}
+			return doubles;
+		}
+		public static double[]? TrySimpleDecodeV2(ReadOnlySpan<ReadOnlyMemory<(ushort token, double probability)>> spd, int tokenClasses, ushort prev)
+		{
+			ReadOnlyMemory<(ushort token, double probability)> dict = spd[prev];
+			int mylen = dict.Length;
+			if (mylen == 0) return null;
+			double[] doubles = new double[tokenClasses];
+			ReadOnlySpan<(ushort, double)> myspan = dict.Span;
+			for(int i = 0; i < mylen; )
+			{
+				(ushort token, double probability) = myspan[i++];
+				doubles[token] = probability;
 			}
 			return doubles;
 		}

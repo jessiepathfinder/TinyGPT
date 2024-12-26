@@ -1,4 +1,5 @@
-﻿using TorchSharp;
+﻿using System.Xml.Serialization;
+using TorchSharp;
 using TorchSharp.Modules;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
@@ -905,6 +906,303 @@ namespace TinyGPT.Core
 			Misc.L1RegularizeIMPL(staticInputPositionalEncoding, lambda);
 		}
 	}
+	public sealed class GPTDecoderUnitV1_4 : FullGPTDecoderUnit, IL2Regularizable, IL1Regularizable, IL2Regularizable2
+	{
+
+		private readonly Linear supplementalOpportunisticWordEmbeddings;
+		private readonly InitDecoderV2 initDecoder;
+		private readonly Conv1d conv1d;
+
+		private readonly ModuleList<Module<Tensor, Tensor>> layers = new ModuleList<Module<Tensor, Tensor>>();
+		//private readonly ModuleList<TinyRNN> rnnlayers = new ModuleList<TinyRNN>();
+		//private readonly ModuleList<ResidualCausalConvolationalLookback> convAttentionLayers = new ModuleList<ResidualCausalConvolationalLookback>();
+
+		private readonly MultiheadSelfAttention finalAttention;
+		private readonly ResidualComputeLayer2 finalCompute;
+		//private readonly Parameter finalLinear;
+
+
+		private readonly int headcount;
+		private readonly Scalar epsilon;
+		
+		public readonly Parameter finalLinear;
+
+
+
+		//private readonly Linear supplementalEngine;
+		//public readonly Tensor supplementalWordEmbedding;
+
+		//private readonly TinyMGU finalMGU;
+
+		public Tensor FinalForward2(Tensor x) => x.matmul(finalLinear);
+		private readonly int causalConvPaddingSize;
+		private readonly int multicompute;
+		public GPTDecoderUnitV1_4(string name, int latentTokenSize, int attentionHeadsCount, int firstTierAttentionLayers, double epsilon, double initialAttentionGain, double initialComputeGain, double computeDropout, int tokenClasses, double keyQueryInitGain, int attentionSize, double auxAttentionDropout, int lstmlayers, int lstmHiddenStateSize, double lstmOutputDropout, InitDecoderV2 initDecoder, int multiApplyComputeLayers, int convKernelSize, int initDecoderHiddenSize) : base(name)
+		{
+			if (attentionHeadsCount < 1)
+			{
+				throw new ArgumentNullException(nameof(attentionHeadsCount));
+			}
+			if (convKernelSize < 2)
+			{
+				throw new ArgumentNullException(nameof(convKernelSize));
+			}
+			//this.pre_expand = Misc.CreateKaimingInitializedLinear(latentTokenSize, pre_expand, false, init.FanInOut.FanIn);
+			//expand = Misc.CreateKaimingInitializedLinear(latentTokenSize, multipliedWidth, true, init.FanInOut.FanIn);
+			this.initDecoder = initDecoder;
+			finalCompute = new ResidualComputeLayer2("", latentTokenSize, epsilon, initialComputeGain, computeDropout);
+			for (int i = 0; i < lstmlayers; ++i)
+			{
+				layers.Add(new AOT_KLSTM_Bugfix("", latentTokenSize, lstmHiddenStateSize, epsilon, lstmOutputDropout));
+			}
+			for (int i = 0; i < firstTierAttentionLayers; ++i)
+			{
+				layers.Add(new MultiheadSelfAttention("", latentTokenSize, attentionSize, attentionHeadsCount, epsilon, initialAttentionGain, keyQueryInitGain, auxAttentionDropout));
+				layers.Add(new ResidualComputeLayer2("", latentTokenSize, epsilon, initialComputeGain, computeDropout));
+			}
+
+			//finalMGU = new TinyMGU("", latentTokenSize, gruHiddenStateSize, epsilon, gruOutputDropout);
+
+			//staticPositionalEncoding = Parameter(zeros(max_context_size, latentTokenSize));
+			Span<long> wordEmbeddingSize = stackalloc long[2];
+
+
+			wordEmbeddingSize[1] = tokenClasses;
+
+
+
+			wordEmbeddingSize[0] = latentTokenSize;
+
+
+
+
+			finalAttention = new MultiheadSelfAttention("", latentTokenSize, attentionSize, attentionHeadsCount, epsilon, initialAttentionGain, keyQueryInitGain, auxAttentionDropout);
+			headcount = attentionHeadsCount;
+
+
+			finalLinear = Parameter(randn(latentTokenSize, tokenClasses).div_(Math.Sqrt(tokenClasses)));
+			conv1d = Conv1d(initDecoderHiddenSize, latentTokenSize, convKernelSize);
+			using(no_grad()){
+#pragma warning disable CS8602 // Dereference of a possibly null reference.
+				conv1d.weight.zero_();
+				conv1d.bias.zero_();
+#pragma warning restore CS8602 // Dereference of a possibly null reference.
+			}
+			supplementalOpportunisticWordEmbeddings = Misc.CreateZeroInitializedLinear(latentTokenSize, latentTokenSize, true);
+			RegisterComponents();
+			this.epsilon = epsilon;
+			multicompute = multiApplyComputeLayers;
+			causalConvPaddingSize = convKernelSize - 1;
+		}
+
+		private static void Apply2(ref Tensor a, Tensor b, string errmsg){
+			using Tensor c = a;
+			long len = c.size(0);
+			long len1 = b.size(0);
+			if (len > len1) throw new Exception(errmsg);
+			if(len == len1){
+				a = c.add(b);
+				return;
+			}
+			using Tensor d = b.slice(0, 0, len, 1);
+			a = c.add(d);
+		}
+
+		public Tensor Forward(ReadOnlySpan<ushort> input, int slice, double dropout = 0.0)
+		{
+			int len = input.Length;
+			int map = multicompute;
+
+			bool multioutput = (len - slice) > 1;
+
+			int softslice = input.IndexOf((ushort)0);
+			if (softslice < 0) throw new Exception("[START_GPT] token is required by this model!");
+			if (slice < softslice) throw new Exception("Output sliced before [START_GPT] token!");
+
+			long[] longs = new long[len];
+			for (int i = 0; i < len; ++i)
+			{
+				longs[i] = input[i];
+			}
+			InitDecoderV2 initDecoder = this.initDecoder;
+			Tensor pretrainedword2vec = initDecoder.wordEmbeddings;
+			Device device = pretrainedword2vec.device;
+			Scalar epsilon = this.epsilon;
+			bool sl0 = slice > 0;
+			bool zss = softslice == 0;
+			Tensor finalLinear = this.finalLinear;
+
+			using (NewDisposeScope())
+			{
+
+				Tensor y;
+				
+				Tensor ct3;
+				using (no_grad())
+				{
+					//NOTE: Opportunistic Embeddings DO NOT HAVE GRAD!
+					ct3 = finalLinear.transpose(0, 1);
+				}
+				using (Tensor z2 = tensor(longs, ScalarType.Int64, device, false))
+				{
+					y = pretrainedword2vec[z2];
+					using Tensor z3 = ct3; ct3 = z3[z2];
+				}
+				using (Tensor x = ct3) ct3 = CustomActivations.Norm(x, epsilon);
+				using (Tensor x = ct3) ct3 = supplementalOpportunisticWordEmbeddings.forward(x);
+				Tensor ct = initDecoder.DoIt2(y,0);
+				using (ct3) using (Tensor z2 = y) y = z2.add(ct3);
+				using (Tensor z2 = y) y = CustomActivations.Norm(y, epsilon);
+				Tensor ct1;
+				using(Tensor z2 = ct.transpose(0, 1))
+				{
+					ct1 = nn.functional.pad(z2, (causalConvPaddingSize, 0), PaddingModes.Zeros, 0.0);
+				}
+				using (Tensor z2 = ct1) ct1 = conv1d.forward(z2);
+				using (Tensor z2 = ct1) ct1 = z2.transpose(0,1);
+				using (ct1) using (Tensor z2 = y) y = z2.add(ct1);
+
+
+				using (Tensor z2 = y) y = CustomActivations.Norm(y, epsilon);
+
+
+
+				Tensor? mask = multioutput ? Transformer.CreateBARTAttentionMask(len, softslice, ScalarType.Float32, device) : null;
+				Tensor[] mergearr = new Tensor[2];
+
+				foreach (Module<Tensor, Tensor> hiddenLayer in layers)
+				{
+					if(hiddenLayer is ResidualComputeLayer2 residualComputeLayer){
+						for(int i = 0; i < map; ++i){
+							using Tensor x1 = y;
+							y = residualComputeLayer.forward(x1);
+						}
+						continue;
+					}
+					using Tensor x = y;
+					if (hiddenLayer is MultiheadSelfAttention sat)
+					{
+
+						y = sat.Forward(x, 0, mask, dropout, false);
+					}
+					else
+					{
+						y = hiddenLayer.forward(x);
+					}
+
+
+				}
+
+				if (multioutput & sl0)
+				{
+					if (mask is { })
+					{
+						using Tensor x = mask;
+						mask = x.slice(0, slice, len, 1);
+					}
+				}
+				else if (mask is { })
+				{
+					mask.Dispose();
+					mask = null;
+				}
+
+
+				using (Tensor x = y) y = finalAttention.Forward(x, slice, mask, dropout, false);
+				mask?.Dispose();
+
+
+
+				for(int i = 0; i < map;++i) using (Tensor x = y) y = finalCompute.forward(x);
+
+				using (Tensor x = y) y = CustomActivations.Norm(x, epsilon);
+				using (Tensor x = y) y = x.matmul(finalLinear);
+				if (slice > 0) using (Tensor z2 = ct) ct = z2.slice(0, slice, len, 1);
+				using (Tensor z2 = ct) ct = initDecoder.FinalDecode(z2);
+				using (ct) using (Tensor x = y) y = x.add(ct);
+				
+
+				return y.MoveToOuterDisposeScope();
+
+
+
+
+
+			}
+		}
+		private static readonly Scalar one = 1.0;
+
+		public override Tensor Forward(ReadOnlySpan<ushort> input)
+		{
+			using (NewDisposeScope())
+			{
+				using Tensor x = Forward(input, input.Length - 1);
+				return x.squeeze(0).MoveToOuterDisposeScope();
+			}
+		}
+
+
+		public void L2Regularize(Scalar lambda)
+		{
+
+			foreach (Module<Tensor, Tensor> module in layers)
+			{
+				if (module is IL2Regularizable regularizable)
+				{
+					regularizable.L2Regularize(lambda);
+				}
+			}
+			finalAttention.L2Regularize(lambda);
+			finalCompute.L2Regularize(lambda);
+			Misc.L2RegularizeIMPL(finalLinear, lambda);
+		}
+		public void L2RegularizeSkipAttn(Scalar lambda)
+		{
+
+			foreach (Module<Tensor, Tensor> module in layers)
+			{
+				if (module is IL2Regularizable regularizable)
+				{
+					if (module is MultiheadSelfAttention) continue;
+					regularizable.L2Regularize(lambda);
+				}
+			}
+			//finalAttention.L2Regularize(lambda);
+			finalCompute.L2Regularize(lambda);
+			Misc.L2RegularizeIMPL(finalLinear, lambda);
+		}
+
+		public void L1Regularize(Scalar lambda)
+		{
+
+			foreach (Module<Tensor, Tensor> module in layers)
+			{
+				if (module is IL1Regularizable regularizable)
+				{
+					regularizable.L1Regularize(lambda);
+				}
+			}
+			finalCompute.L1Regularize(lambda);
+
+			Misc.L1RegularizeIMPL(conv1d.weight, lambda);
+
+		}
+
+		public void L2RegularizeOutput(Scalar lambda)
+		{
+			foreach (Module<Tensor, Tensor> module in layers)
+			{
+				if (module is IL2Regularizable2 regularizable)
+				{
+					regularizable.L2RegularizeOutput(lambda);
+				}
+			}
+			//finalAttention.L2RegularizeOutput(lambda);
+			finalCompute.L2RegularizeOutput(lambda);
+		}
+
+
+	}
 	public sealed class GPTDecoderUnitV1_3 : FullGPTDecoderUnit, IL2Regularizable, IL1Regularizable, IL2Regularizable2, IHaveSpecialTreatmentLayers
 	{
 
@@ -929,7 +1227,7 @@ namespace TinyGPT.Core
 		//public readonly Tensor supplementalWordEmbedding;
 
 		//private readonly TinyMGU finalMGU;
-		
+
 		public Tensor FinalForward2(Tensor x) => x.matmul(finalLinear);
 		private readonly int causalConvPaddingSize;
 		private readonly int multicompute;
@@ -1018,28 +1316,33 @@ namespace TinyGPT.Core
 
 				Tensor ct;
 
-				if(zss){
+				if (zss)
+				{
 					ct = y;
 					y = CustomActivations.Norm(y, epsilon);
 					initDecoder.DoIt(ref ct, slice - softslice);
-				} else{
+				}
+				else
+				{
 					ct = y.slice(0, softslice, len, 1);
 					initDecoder.DoIt(ref ct, slice - softslice);
 					using Tensor x = y; y = CustomActivations.Norm(x, epsilon);
 				}
-				
 
 
 
-				
+
+
 
 				Tensor? mask = multioutput ? Transformer.CreateBARTAttentionMask(len, softslice, ScalarType.Float32, device) : null;
 
 
 				foreach (Module<Tensor, Tensor> hiddenLayer in layers)
 				{
-					if(hiddenLayer is ResidualComputeLayer2 residualComputeLayer){
-						for(int i = 0; i < map; ++i){
+					if (hiddenLayer is ResidualComputeLayer2 residualComputeLayer)
+					{
+						for (int i = 0; i < map; ++i)
+						{
 							using Tensor x1 = y;
 							y = residualComputeLayer.forward(x1);
 						}
@@ -1079,12 +1382,12 @@ namespace TinyGPT.Core
 
 
 
-				for(int i = 0; i < map;++i) using (Tensor x = y) y = finalCompute.forward(x);
+				for (int i = 0; i < map; ++i) using (Tensor x = y) y = finalCompute.forward(x);
 
 				using (Tensor x = y) y = CustomActivations.Norm(x, epsilon);
 				using (Tensor x = y) y = x.matmul(finalLinear);
 				using (ct) using (Tensor x = y) y = x.add(ct);
-				
+
 
 				return y.MoveToOuterDisposeScope();
 
@@ -1180,7 +1483,7 @@ namespace TinyGPT.Core
 			Tensor o = finalLinear;
 			o.zero_();
 			o.requires_grad = true;
-			
+
 			initDecoder.PrepareRetrain();
 		}
 	}
@@ -1259,6 +1562,120 @@ namespace TinyGPT.Core
 			Misc.L2RegularizeIMPL(input, lambda);
 			Misc.L2RegularizeIMPL(core, lambda);
 			Misc.L2RegularizeIMPL(output, lambda);
+		}
+		public void L2RegularizeOutput(Scalar lambda)
+		{
+			Misc.L2RegularizeIMPL(output, lambda);
+		}
+	}
+	public sealed class InitDecoderV2 : FullGPTDecoderUnit, IL2Regularizable
+	{
+		public readonly Tensor wordEmbeddings;
+		private readonly Parameter input;
+		private readonly Parameter input_bias;
+		private readonly Parameter core;
+
+		private readonly Parameter gate;
+		private readonly Parameter gate_;
+		private readonly Parameter gate_bias;
+
+		private readonly Parameter reset;
+		private readonly Parameter reset_;
+		private readonly Parameter reset_bias;
+
+		private readonly Parameter output;
+
+		private static readonly jit.CompilationUnit compilationUnit = jit.compile("def aot_gru_core_nodrop_special(core : Tensor, input_ : Tensor, input_bias : Tensor, gate_ : Tensor, gate : Tensor, gate_bias: Tensor, reset_ : Tensor, reset : Tensor, reset_bias : Tensor, _input : Tensor, slicey: int) -> Tensor:    \r\n    length = _input.size(-2)    \r\n    \r\n    gate_ = _input.matmul(gate_).add(gate_bias)\r\n    input_ = _input.matmul(input_).add(input_bias)\r\n    hidden_state = _input.select(-2,0).arctan().mul(gate_.select(-2,0).neg().sigmoid())\r\n    if(length == 1):\r\n        return hidden_state.unsqueeze(-2)\r\n    \r\n    reset_ = _input.transpose(-2,0)[1:length].transpose(-2,0).matmul(reset_).add(reset_bias)\r\n    \r\n    outputs = []\r\n    if slicey == 0:\r\n        outputs.append(hidden_state.unsqueeze(-2))\r\n    \r\n    for x in range(1,length):\r\n        mygate = gate_.select(-2,x).add(hidden_state.matmul(gate)).sigmoid()\r\n        hidden_state = input_.select(-2,x).add(hidden_state.mul(reset_.select(-2,x - 1).add(hidden_state.matmul(reset)).sigmoid()).matmul(core), alpha=2.0).arctan().mul(mygate).addcmul(hidden_state, mygate.sub(1), value=-1.0)\r\n        \r\n        if x >= slicey:\r\n            outputs.append(hidden_state.unsqueeze(-2))\r\n\r\n    return torch.cat(outputs, -2) if (length - slicey) > 1 else outputs[0]\r\n");
+		public void PrepareRetrain()
+		{
+			Tensor o = output;
+			o.zero_();
+			o.requires_grad = true;
+
+		}
+		public void Hack2()
+		{
+			input.requires_grad = false;
+			input_bias.requires_grad = false;
+			core.requires_grad = false;
+			gate.requires_grad = false;
+			gate_.requires_grad = false;
+			gate_bias.requires_grad = false;
+			reset.requires_grad = false;
+			reset_.requires_grad = false;
+			reset_bias.requires_grad = false;
+		}
+		public InitDecoderV2(string name, Tensor wordEmbeddings, long memorySize, long tokenClasses) : base(name)
+		{
+			this.wordEmbeddings = wordEmbeddings;
+			long lts = wordEmbeddings.size(1);
+			Scalar div = Math.Sqrt(lts + memorySize);
+			
+			input = nn.Parameter(randn(lts, memorySize).div_(div));
+			input_bias = nn.Parameter(zeros(memorySize));
+			core = nn.Parameter(randn(memorySize, memorySize).div_(div));
+			output = nn.Parameter(randn(memorySize, tokenClasses).div_(Math.Sqrt(tokenClasses)));
+
+			Scalar div2 = Math.Sqrt(memorySize);
+			reset = nn.Parameter(randn(memorySize, memorySize).div_(div2));
+			reset_ = nn.Parameter(randn(lts, memorySize).div_(div2));
+			reset_bias = nn.Parameter(zeros(memorySize));
+
+			gate = nn.Parameter(randn(memorySize, memorySize).div_(div2));
+			gate_ = nn.Parameter(randn(lts, memorySize).div_(div2));
+			gate_bias = nn.Parameter(zeros(memorySize));
+
+			RegisterComponents();
+		}
+
+		public void DoIt(ref Tensor x, int slice)
+		{
+
+
+			//def aot_gru_core_nodrop_special(core : Tensor, input_ : Tensor, input_bias : Tensor, gate_ : Tensor, gate : Tensor, gate_bias: Tensor, reset_ : Tensor, reset : Tensor, reset_bias : Tensor, _input : Tensor, slicey: int)
+			using (Tensor y = x) x = compilationUnit.invoke<Tensor>("aot_gru_core_nodrop_special", core, input, input_bias, gate_, gate, gate_bias, reset_, reset, reset_bias, y, slice);
+			using (Tensor y = x) x = y.matmul(output);
+		}
+		public Tensor DoIt2(Tensor x, int slice)
+		{
+			return compilationUnit.invoke<Tensor>("aot_gru_core_nodrop_special", core, input, input_bias, gate_, gate, gate_bias, reset_, reset, reset_bias, x, slice);
+		}
+		public Tensor FinalDecode(Tensor x) => x.matmul(output);
+
+		public override Tensor Forward(ReadOnlySpan<ushort> input)
+		{
+			using (NewDisposeScope())
+			{
+				using Tensor x = Forward(input, input.Length - 1);
+				return x.squeeze(0).MoveToOuterDisposeScope();
+			}
+		}
+		public Tensor Forward(ReadOnlySpan<ushort> input, int slice)
+		{
+			int len = input.Length;
+			if (slice >= len | slice < 0) throw new Exception("Invalid slice!");
+			long[] longarr = new long[len];
+			for (int i = 0; i < len; ++i) longarr[i] = input[i];
+			Tensor we = wordEmbeddings;
+			using (NewDisposeScope())
+			{
+				Tensor y;
+
+				using (Tensor x = tensor(longarr, int64, we.device)) y = we[x];
+				DoIt(ref y, slice);
+				return y.MoveToOuterDisposeScope();
+			}
+		}
+
+		public void L2Regularize(Scalar lambda)
+		{
+			Misc.L2RegularizeIMPL(input, lambda);
+			Misc.L2RegularizeIMPL(core, lambda);
+			Misc.L2RegularizeIMPL(output, lambda);
+			Misc.L2RegularizeIMPL(gate, lambda);
+			Misc.L2RegularizeIMPL(gate_, lambda);
+			Misc.L2RegularizeIMPL(reset, lambda);
+			Misc.L2RegularizeIMPL(reset_, lambda);
 		}
 		public void L2RegularizeOutput(Scalar lambda)
 		{

@@ -125,7 +125,6 @@ namespace TinyGPT.Chatbot
 					}
 					break;
 				case "nano-v1_3":
-				case "nano-v1_3_1":
 
 					{
 						const int latentTokenSize = 2048;
@@ -136,6 +135,18 @@ namespace TinyGPT.Chatbot
 						tokenclasses += magicTokenClasses + 1;
 						themodel = new GPTDecoderUnitV1_3("", latentTokenSize, attentionHeads, firstTierAttentionDepth, 1e-7, 1.0, 1.0, 0.0, tokenclasses, 1.0, 128, 0.0, 1, 2048, 0.0, new InitDecoder("", empty(tokenclasses, latentTokenSize), 2048, 3, tokenclasses), 1);
 						loadSPD = false;
+					}
+					break;
+				case "nano-v1_4":
+					{
+						const int latentTokenSize = 2048;
+						maxcontext = 1025;
+						const int attentionHeads = 16;
+						const int firstTierAttentionDepth = 5;
+						magicTokenClasses = 3;
+						tokenclasses += magicTokenClasses + 1;
+						themodel = new GPTDecoderUnitV1_4("", latentTokenSize, attentionHeads, firstTierAttentionDepth, 1e-7, 1.0, 1.0, 0.0, tokenclasses, 1.0, 128, 0.0, 1, 2048, 0.0, new InitDecoderV2("", empty(tokenclasses, latentTokenSize), 2048, tokenclasses), 1, 3, 2048);
+						loadSPD = true;
 					}
 					break;
 				case "nano-v1_2":
@@ -172,12 +183,13 @@ namespace TinyGPT.Chatbot
 				themodel.to(CUDA);
 			}
 
-			Dictionary<ushort, double>?[]? spd = null;
-			if(loadSPD){
-				using Stream str = new BufferedStream(new DeflateStream(new FileStream(datadir + "SimpleDecoder.model", FileMode.Open, FileAccess.Read, FileShare.Read, 65536 * 256, FileOptions.SequentialScan), CompressionMode.Decompress, false), 256 * 65536);
-				spd = Misc.LoadSimpleDecoder(tokenclasses, str);
+			ReadOnlyMemory<(ushort, double)>[]? simpleDecoder;
+			
+			if (loadSPD){
+				using BufferedStream dfs = new BufferedStream(new DeflateStream(new FileStream(datadir + "SimpleDecoder.model", FileMode.Open, FileAccess.Read, FileShare.Read, 16777216, FileOptions.SequentialScan), CompressionMode.Decompress), 16777216);
+				simpleDecoder = Misc.LoadSimpleDecoderV2(tokenclasses, dfs);
 			} else{
-				spd = null;
+				simpleDecoder = null;
 			}
 			//4 magic token types
 
@@ -225,7 +237,6 @@ namespace TinyGPT.Chatbot
 					
 					
 					Tensor tensor, indices;
-					double tk = 1.0;
 
 					
 					using (Tensor x = themodel.Forward(buffer[..i]))
@@ -233,31 +244,29 @@ namespace TinyGPT.Chatbot
 						tensor = x.to(float64);
 						//(tensor, indices) = x.sort(descending: true);
 					}
-					double[]? doubles = spd is null ? null : Misc.TrySimpleDecode(spd, tokenclasses, prevtkn);
+					double[]? doubles = simpleDecoder is null ? null : Misc.TrySimpleDecodeV2(simpleDecoder, tokenclasses, prevtkn);
 					if (doubles is { })
 					{
 						using Tensor x = torch.tensor(doubles, tensor.dtype, tensor.device);
 						x.log_();
 						tensor.add_(x);
 					}
+					//MASK taboo words
+					if(simpleDecoder is null) for (int p = 0; p < 4;)
+						{
+							ushort myr = taboo[p++];
+							if (myr == 65535) continue;
+							string? detokenized = decode[myr];
+							if (detokenized is { } && detokenized.Contains(','))
+								continue;
+							tensor[myr] = double.NegativeInfinity;
+
+						}
 					using (Tensor x = tensor)
 					{
 						tensor = x.softmax(0);
 					}
-					//MASK taboo words
-					for (int p = 0; p < 4;)
-					{
-						ushort myr = taboo[p++];
-						if (myr == 65535) continue;
-						string? detokenized = decode[myr];
-						if (detokenized is { } && detokenized.Contains(','))
-							continue;
-						Scalar sc;
-						using (Tensor tt = tensor[myr]) sc = tt.ToScalar();
-						tk -= sc.ToDouble();
-						tensor[myr] = 0.0;
-
-					}
+					
 					
 					using (Tensor x = tensor)
 					{
@@ -267,7 +276,7 @@ namespace TinyGPT.Chatbot
 						using Tensor x = tensor;
 						tensor = x.cpu();
 					}
-					tk *= topk[tkwindow] * temperature;
+					double tk = topk[tkwindow] * temperature;
 					if (tkwindow == 255)
 					{
 						tkwindow = 0;
@@ -299,7 +308,7 @@ namespace TinyGPT.Chatbot
 						break;
 					}
 					//lastRepeat[bestindex] = i2;
-					taboo[i % 4] = prevtkn;
+					if(simpleDecoder is null)taboo[i % 4] = prevtkn;
 					buffer[i] = prevtkn;
 					
 					string? str = decode[prevtkn];

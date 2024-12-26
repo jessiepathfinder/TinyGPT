@@ -207,7 +207,7 @@ namespace TinyGPT.Core
 		public int step;
 		public AdaBelief(IEnumerable<Parameter> parameters1, double beta1, double beta2, double epsilon, double epsilon2)
 		{
-			Tensor[] tensors = parameters1.ToArray();
+			Tensor[] tensors = Misc.TensorizeParams(parameters1).ToArray();
 			parameters = tensors.AsMemory();
 			int size = tensors.Length;
 			state = new (Tensor, Tensor)[size];
