@@ -410,6 +410,56 @@ namespace TinyGPT.Core
 			Misc.L1RegularizeIMPL(output.weight, lambda);
 		}
 	}
+	public sealed class ResidualComputeLayer3 : Module<Tensor, Tensor>, IL2Regularizable
+	{
+		private readonly Linear inputs;
+		private readonly Linear output;
+		//private readonly Parameter gate;
+		private readonly Scalar epsilon;
+
+
+
+
+		public ResidualComputeLayer3(string name, int size, double epsilon, double init_output_gain) : base(name)
+		{
+			inputs = Misc.CreateXavierInitializedLinear(size, size, true);
+			output = Misc.CreateXavierInitializedLinear(size, size, true, init_output_gain);
+			//gate = Parameter(ones(size));
+			this.epsilon = epsilon;
+			RegisterComponents();
+		}
+
+		public override Tensor forward(Tensor input1)
+		{
+			using (NewDisposeScope())
+			{
+
+				Tensor y;
+				using (Tensor x = inputs.forward(input1))
+				{
+					y = x.softplus();
+				}
+
+
+
+				using (Tensor x = y)
+				{
+					y = output.forward(x);
+				}
+				using (Tensor x = y) y = x.add(input1);
+				using (y)
+				{
+					return CustomActivations.Norm(y, epsilon).MoveToOuterDisposeScope();
+				}
+			}
+		}
+
+		public void L2Regularize(Scalar lambda)
+		{
+			Misc.L2RegularizeIMPL(inputs.weight, lambda);
+			Misc.L2RegularizeIMPL(output.weight, lambda);
+		}
+	}
 
 	public sealed class MultiheadSelfAttention : Module<Tensor, Tensor>, IL2Regularizable, ISelfAttention, IHaveSpecialTreatmentLayers
 	{
@@ -533,6 +583,110 @@ namespace TinyGPT.Core
 			values = Parameter(Misc.GenerateKaimingQueryMatrix(inputSize, keySize, heads, initial_gain: init_gain));
 			exit = Misc.CreateKaimingInitializedLinear(keySize * heads, inputSize, true, init.FanInOut.FanIn, init_gain);
 			aux_dropout = auxDropout;
+			//gate = Parameter(ones(inputSize));
+			this.epsilon = epsilon;
+			RegisterComponents();
+		}
+	}
+	public sealed class NormalizedMultiheadCausalSelfAttention : Module<Tensor, Tensor>
+	{
+		private static readonly Scalar one = 1;
+		private readonly Scalar epsilon;
+		private readonly double aux_dropout;
+
+		private Tensor MM2(Tensor x, Tensor y)
+		{
+			Tensor z = x.matmul(y);
+			double axd = aux_dropout;
+			if ((axd > 0.0 & !CustomActivations.threadPrivateDropoutDisableHack) && is_grad_enabled())
+			{
+				using Tensor temp = ones(z.size(1), 1, z.size(3), x.dtype, x.device, false);
+				dropout(temp, axd, true, true);
+				using (z)
+				{
+					return z.mul(temp);
+				}
+			}
+			return z;
+		}
+
+		public override Tensor forward(Tensor input)
+		{
+
+			using (NewDisposeScope())
+			{
+				Tensor x;
+				using (Tensor key = input.matmul(keys))
+				{
+					using Tensor value = input.matmul(values);
+					using Tensor query = MM2(input,queries);
+					
+					using (query)
+					{
+						x = Misc.MixedPrecisionAttention(query, key, value, null, true);
+					}
+				}
+
+				using (Tensor y = x)
+				{
+					x = y.squeeze(0);
+				}
+				using (Tensor y = x)
+				{
+					x = y.transpose(0, 1);
+				}
+				using (Tensor y = x)
+				{
+					x = y.flatten(1);
+				}
+				using (Tensor y = x)
+				{
+					x = exit.forward(y);
+				}using (Tensor y = x)
+				{
+					x = y.add(input);
+				}
+
+				
+
+
+				using (Tensor y = x)
+				{
+					x = compilationUnit.invoke<Tensor>("aot_history_norm", y, mynorm);
+				}
+				using (x)
+				{
+					return CustomActivations.Norm(x, epsilon).MoveToOuterDisposeScope();
+				}
+			}
+
+
+		}
+		private static jit.CompilationUnit compilationUnit = jit.compile("def aot_history_norm(_input : Tensor, decay : float):\r\n    length = _input.size(-2)\r\n    bias = _input.select(-2,0)\r\n    corrections = [bias.unsqueeze(-2)]\r\n    for x in range(1,length):\r\n        bias = _input.select(-2,x).add(bias,alpha=decay)\r\n        corrections.append(bias.unsqueeze(-2))\r\n    return _input.add(torch.cat(corrections, -2), alpha = decay - 1.0)\r\n");
+
+
+		public IEnumerable<Parameter> GetSpecialTreatmentLayers()
+		{
+			return new Parameter[] { keys, queries };
+		}
+
+		private readonly Linear exit;
+		private readonly Parameter keys;
+		private readonly Parameter queries;
+		private readonly Parameter values;
+		private readonly Scalar mynorm;
+		//private readonly Linear queries;
+		//private readonly Parameter values;
+		//private readonly Parameter gate;
+		public NormalizedMultiheadCausalSelfAttention(string name, int inputSize, int keySize, int heads, double epsilon, double init_gain, double keyQueryInitGain, double auxDropout, double normalization) : base(name)
+		{
+
+			keys = Parameter(Misc.GenerateKaimingQueryMatrix(inputSize, keySize, heads, initial_gain: keyQueryInitGain));
+			queries = Parameter(Misc.GenerateKaimingQueryMatrix(inputSize, keySize, heads, initial_gain: keyQueryInitGain));
+			values = Parameter(Misc.GenerateKaimingQueryMatrix(inputSize, keySize, heads, initial_gain: init_gain));
+			exit = Misc.CreateKaimingInitializedLinear(keySize * heads, inputSize, false, init.FanInOut.FanIn, init_gain);
+			aux_dropout = auxDropout;
+			mynorm = normalization;
 			//gate = Parameter(ones(inputSize));
 			this.epsilon = epsilon;
 			RegisterComponents();
@@ -897,6 +1051,7 @@ namespace TinyGPT.Core
 		}
 
 	}
+
 	public sealed class AOT_KLSTM_Bugfix : Module<Tensor, Tensor>, IL1Regularizable, IL2Regularizable, IL2Regularizable2
 	{
 		private readonly Parameter input;
@@ -999,8 +1154,6 @@ namespace TinyGPT.Core
 		{
 			Misc.L2RegularizeIMPL(output, lambda);
 		}
-
-
 	}
 	public sealed class AOT_KLSTM_Peephole : Module<Tensor, Tensor>, IL1Regularizable, IL2Regularizable, IL2Regularizable2
 	{
