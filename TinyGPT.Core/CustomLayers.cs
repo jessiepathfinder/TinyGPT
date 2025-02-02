@@ -24,7 +24,7 @@ namespace TinyGPT.Core
 			RegisterComponents();
 		}
 	}
-	public interface IHaveSpecialTreatmentLayers{
+	public interface IHaveSpecialTreatmentLayers {
 		public IEnumerable<Parameter> GetSpecialTreatmentLayers();
 	}
 	public sealed class DoesNothingModule : Module
@@ -36,13 +36,30 @@ namespace TinyGPT.Core
 			RegisterComponents();
 		}
 	}
-	
+
 	public static class CustomActivations
 	{
+		public static Tensor MakeSinusoidalMatrix(long width, long height, Device? device, ScalarType scalarType){
+			using(NewDisposeScope()){
+				Tensor a = arange(zero, width, int64, device);
+				a.unsqueeze_(-1);
+				Tensor y = arange(one, height + 1, int64, device);
+				using (a) using (Tensor x = y) y = a.mul(x);
+				using (Tensor x = y) y = x.to(scalarType);
+				y.div_(height);
+				Tensor c = y.sin();
+				y.cos_();
+				using (c) using (Tensor x = y) y = torch.cat(new Tensor[] { c, x }, 1);
+				y.mul_(sqrt2);
+				return y.MoveToOuterDisposeScope();
+			}
+		}
+		private static readonly Scalar sqrt2 = Math.Sqrt(2);
 		private static readonly Scalar one = 1;
-		[ThreadStatic]public static bool threadPrivateDropoutDisableHack;
-		public static void ChannelDropout2(ref Tensor input, double prob){
-			if((prob > 0.0 & !threadPrivateDropoutDisableHack) && is_grad_enabled() && input.requires_grad)
+		private static readonly Scalar zero = 0;
+		[ThreadStatic] public static bool threadPrivateDropoutDisableHack;
+		public static void ChannelDropout2(ref Tensor input, double prob) {
+			if ((prob > 0.0 & !threadPrivateDropoutDisableHack) && is_grad_enabled() && input.requires_grad)
 			{
 				using Tensor x = input;
 				using Tensor temp = ones(input.size(-1), input.dtype, input.device, false);
@@ -57,10 +74,10 @@ namespace TinyGPT.Core
 				input = dropout(x, prob, true, false);
 			}
 		}
-		public static Tensor Tanh2(Tensor input){
-			using(NewDisposeScope()){
+		public static Tensor Tanh2(Tensor input) {
+			using (NewDisposeScope()) {
 				Tensor x;
-				using(Tensor y = input.mul(input)){
+				using (Tensor y = input.mul(input)) {
 					x = y.add(one);
 				}
 				return input.div(x).MoveToOuterDisposeScope();
@@ -82,22 +99,22 @@ namespace TinyGPT.Core
 				return x.max(input).MoveToOuterDisposeScope();
 			}
 		}
-		public static Tensor KernelNorm(Tensor input, long kernelSize, Scalar epsilon){
-			if(input.size(1) == kernelSize){
+		public static Tensor KernelNorm(Tensor input, long kernelSize, Scalar epsilon) {
+			if (input.size(1) == kernelSize) {
 				return Norm(input, epsilon);
 			}
 			ScalarType scalarType = input.dtype;
 			if (scalarType == ScalarType.Float64 | scalarType == ScalarType.Float32)
 			{
-				return KernelNormImpl(input, kernelSize, epsilon);	
-			} else{
+				return KernelNormImpl(input, kernelSize, epsilon);
+			} else {
 				using (NewDisposeScope())
 				{
 					Tensor y;
-					using(Tensor x = input.to(ScalarType.Float32)){
+					using (Tensor x = input.to(ScalarType.Float32)) {
 						y = KernelNormImpl(x, kernelSize, epsilon);
 					}
-					using(y){
+					using (y) {
 						return y.to(scalarType).MoveToOuterDisposeScope();
 					}
 				}
@@ -210,7 +227,7 @@ namespace TinyGPT.Core
 				}
 			}
 		}
-		private static Tensor NormImpl(Tensor input, Scalar epsilon){
+		private static Tensor NormImpl(Tensor input, Scalar epsilon) {
 			return BF16_layerNormKernel.invoke<Tensor>("mixed_layer_norm", input, epsilon);
 		}
 		private static Tensor HalfNormImpl(Tensor input)
@@ -226,23 +243,23 @@ namespace TinyGPT.Core
 			using (NewDisposeScope())
 			{
 				Tensor mean;
-				using(Tensor x = input.mul(input)) mean = x.sum(-1, true);
+				using (Tensor x = input.mul(input)) mean = x.sum(-1, true);
 				using (Tensor x = mean) mean = x.div(input.size(-1));
 				using (Tensor x = mean) mean = x.sqrt();
 				using (Tensor x = mean) mean = x.add(epsilon);
-				using (mean){
+				using (mean) {
 					return input.div(mean).MoveToOuterDisposeScope();
 				}
-				
+
 			}
 		}
 		public static Tensor LogReLU(Tensor input) {
-			using(NewDisposeScope()){
+			using (NewDisposeScope()) {
 				Tensor y;
-				using(Tensor x = input.relu()){
+				using (Tensor x = input.relu()) {
 					y = x.add(one);
 				}
-				using(y){
+				using (y) {
 					return y.log().MoveToOuterDisposeScope();
 				}
 			}
@@ -294,7 +311,7 @@ namespace TinyGPT.Core
 		public void L1Regularize(Scalar lambda);
 	}
 
-	
+
 	public sealed class ResidualComputeLayer : Module<Tensor, Tensor>, IL2Regularizable, IL1Regularizable
 	{
 		private readonly Linear inputs;
@@ -327,11 +344,11 @@ namespace TinyGPT.Core
 
 				CustomActivations.Dropout(ref y, dropout);
 
-				using (Tensor x = y){
+				using (Tensor x = y) {
 					y = output.forward(x);
 				}
-				using (Tensor x = y) y = x.add(input1); 
-				
+				using (Tensor x = y) y = x.add(input1);
+
 				using (y)
 				{
 					return CustomActivations.Norm(y, epsilon).MoveToOuterDisposeScope();
@@ -359,7 +376,7 @@ namespace TinyGPT.Core
 		private readonly double dropout;
 
 
-		
+
 
 		public ResidualComputeLayer2(string name, int size, double epsilon, double init_output_gain, double dropout) : base(name)
 		{
@@ -458,6 +475,176 @@ namespace TinyGPT.Core
 		{
 			Misc.L2RegularizeIMPL(inputs.weight, lambda);
 			Misc.L2RegularizeIMPL(output.weight, lambda);
+		}
+	}
+	public sealed class MultiheadSelfAttention_SimpleRegularize : Module<Tensor, Tensor>
+	{
+		private static readonly Scalar one = 1;
+		private readonly Scalar epsilon;
+		private readonly double aux_dropout;
+		public override Tensor forward(Tensor input)
+		{
+			return Forward(input, 0, null);
+		}
+		private Tensor MM2(Tensor x, Tensor y)
+		{
+			Tensor z = x.matmul(y);
+			double axd = aux_dropout;
+			if ((axd > 0.0 & !CustomActivations.threadPrivateDropoutDisableHack) && is_grad_enabled())
+			{
+				using Tensor temp = ones(z.size(1), 1, z.size(3), x.dtype, x.device, false);
+				dropout(temp, axd, true, true);
+				using (z)
+				{
+					return z.mul(temp);
+				}
+			}
+			return z;
+		}
+
+		public Tensor Forward(Tensor input, int slice, Tensor? mask = null, double dropout = 0.0, bool causal = false)
+		{
+			bool doslice = slice > 0;
+			long end = doslice ? input.size(0) : -1;
+
+			using (NewDisposeScope())
+			{
+				Tensor x;
+				using (Tensor key = input.matmul(keys))
+				{
+					using Tensor value = input.matmul(values);
+					Tensor query;
+					if (doslice)
+					{
+						using Tensor y = input.slice(0, slice, end, 1);
+						query = MM2(y, queries);
+					}
+					else
+					{
+						query = MM2(input, queries);
+					}
+					using (query)
+					{
+						x = Misc.MixedPrecisionAttention(query, key, value, mask, causal, dropout);
+					}
+				}
+
+				using (Tensor y = x)
+				{
+					x = y.squeeze(0);
+				}
+				using (Tensor y = x)
+				{
+					x = y.transpose(0, 1);
+				}
+				using (Tensor y = x)
+				{
+					x = y.flatten(1);
+				}
+				using (Tensor y = x)
+				{
+					x = exit.forward(y);
+				}
+				/*
+				using (Tensor y = x)
+				{
+					if(doslice ){
+						using Tensor sliced = input.slice(0, slice, end, 1);
+						x = y.addcmul(sliced, gate, one);
+					} else{
+						x = y.addcmul(input, gate, one);
+					}
+				}
+				*/
+
+
+				using (Tensor y = x)
+				{
+					if (doslice)
+					{
+						using Tensor sliced = input.slice(0, slice, end, 1);
+						x = y.add(sliced);
+					}
+					else
+					{
+						x = y.add(input);
+					}
+				}
+				AOT_SimpleRegularize.ApplyConditional(ref x, regularization);
+				using (x)
+				{
+					return CustomActivations.Norm(x, epsilon).MoveToOuterDisposeScope();
+				}
+			}
+
+
+		}
+
+		private readonly Linear exit;
+		private readonly Parameter keys;
+		private readonly Parameter queries;
+		private readonly Parameter values;
+		//private readonly Linear queries;
+		//private readonly Parameter values;
+		//private readonly Parameter gate;
+		private readonly double regularization;
+		public MultiheadSelfAttention_SimpleRegularize(string name, int inputSize, int keySize, int heads, double epsilon, double init_gain, double keyQueryInitGain, double auxDropout, double regularization) : base(name)
+		{
+
+			keys = Parameter(Misc.GenerateKaimingQueryMatrix(inputSize, keySize, heads, initial_gain: keyQueryInitGain));
+			queries = Parameter(Misc.GenerateKaimingQueryMatrix(inputSize, keySize, heads, initial_gain: keyQueryInitGain));
+			values = Parameter(Misc.GenerateKaimingQueryMatrix(inputSize, keySize, heads, initial_gain: init_gain));
+			exit = Misc.CreateKaimingInitializedLinear(keySize * heads, inputSize, true, init.FanInOut.FanIn, init_gain);
+			this.regularization = regularization;
+			aux_dropout = auxDropout;
+			//gate = Parameter(ones(inputSize));
+			this.epsilon = epsilon;
+			RegisterComponents();
+		}
+	}
+	public sealed class ResidualComputeLayer3_SimpleRegularize : Module<Tensor, Tensor>
+	{
+		private readonly Linear inputs;
+		private readonly Linear output;
+		//private readonly Parameter gate;
+		private readonly Scalar epsilon;
+		private readonly double regularization;
+
+
+		public ResidualComputeLayer3_SimpleRegularize(string name, int size, double epsilon, double init_output_gain, double regularization) : base(name)
+		{
+			inputs = Misc.CreateXavierInitializedLinear(size, size, true);
+			output = Misc.CreateXavierInitializedLinear(size, size, true, init_output_gain);
+			//gate = Parameter(ones(size));
+			this.epsilon = epsilon;
+			this.regularization = regularization;
+			RegisterComponents();
+		}
+
+		public override Tensor forward(Tensor input1)
+		{
+			using (NewDisposeScope())
+			{
+
+				Tensor y;
+				using (Tensor x = inputs.forward(input1))
+				{
+					y = x.softplus();
+				}
+
+
+
+				using (Tensor x = y)
+				{
+					y = output.forward(x);
+				}
+				using (Tensor x = y) y = x.add(input1);
+				AOT_SimpleRegularize.ApplyConditional(ref y, regularization);
+				using (y)
+				{
+					return CustomActivations.Norm(y, epsilon).MoveToOuterDisposeScope();
+				}
+			}
 		}
 	}
 
@@ -1051,7 +1238,85 @@ namespace TinyGPT.Core
 		}
 
 	}
+	public sealed class AOT_KLSTM_v2 : Module<Tensor, Tensor>, IL2Regularizable
+	{
+		private readonly Parameter input;
 
+		private readonly Parameter core;
+		private readonly Parameter core_bias;
+		private readonly Scalar epsilon;
+
+		private readonly Parameter input_gate_;
+		private readonly Parameter input_gate;
+		private readonly Parameter input_gate_bias;
+
+		private readonly Parameter output_gate_;
+		private readonly Parameter output_gate;
+		private readonly Parameter output_gate_bias;
+		
+		private readonly Parameter reset_gate_;
+		private readonly Parameter reset_gate;
+		private readonly Parameter reset_gate_bias;
+
+		private readonly Parameter output;
+		private readonly Parameter output_bias;
+
+		private readonly double regularization;
+		public AOT_KLSTM_v2(string name, int size, int coresize, double epsilon, double regularization) : base(name)
+		{
+			this.epsilon = epsilon;
+
+			Scalar std = Math.Sqrt(size + coresize);
+			using (no_grad())
+			{
+				input = Parameter(randn(size, coresize).div_(std));
+				input_gate_ = Parameter(randn(size, coresize).div_(std));
+				output_gate_ = Parameter(randn(size, coresize).div_(std));
+				reset_gate_ = Parameter(randn(size, coresize).div_(std));
+
+				core = Parameter(randn(coresize, coresize).div_(std));
+				input_gate = Parameter(randn(coresize, coresize).div_(std));
+				output_gate = Parameter(randn(coresize, coresize).div_(std));
+				reset_gate = Parameter(randn(coresize, coresize).div_(std));
+
+				core_bias = Parameter(zeros(coresize));
+				input_gate_bias = Parameter(zeros(coresize));
+				output_gate_bias = Parameter(zeros(coresize));
+				reset_gate_bias = Parameter(zeros(coresize));
+				output_bias = Parameter(zeros(size));
+
+				output = Parameter(randn(coresize, size).div_(Math.Sqrt(coresize)));
+			}
+
+
+
+			RegisterComponents();
+			this.regularization = regularization;
+		}
+
+		public override Tensor forward(Tensor input1)
+		{
+			using(NewDisposeScope()){
+				Tensor x = compilationUnit.invoke<Tensor>("aot_klstm_core_v2", input_gate, reset_gate, output_gate, core, input_gate_, input_gate_bias, reset_gate_, reset_gate_bias, output_gate_, output_gate_bias, input, core_bias, output, output_bias, input1);
+				AOT_SimpleRegularize.ApplyConditional(ref x, regularization);
+				using (x) return CustomActivations.Norm(x, epsilon).MoveToOuterDisposeScope();
+			}
+		}
+		private static readonly jit.CompilationUnit compilationUnit = jit.compile("def norm(input : Tensor):\r\n    x = input.sub(input.mean(-1,keepdim=True))\r\n    return x.div(x.mul(x).mean(-1,keepdim=True).sqrt())\r\n\r\ndef aot_klstm_core_v2(input_gate : Tensor, reset_gate : Tensor,output_gate : Tensor,core : Tensor, input_gate_ : Tensor, input_gate_bias : Tensor, reset_gate_ : Tensor, reset_gate_bias : Tensor, output_gate_ : Tensor, output_gate_bias : Tensor, input_ : Tensor, input_bias : Tensor, output_ : Tensor, output_bias_ : Tensor, _input : Tensor) -> Tensor:\r\n    \r\n    length = _input.size(-2)\r\n    \r\n    input_gate_ = _input.matmul(input_gate_).add(input_gate_bias)\r\n    reset_gate_ = _input.transpose(-2,0)[1:length].transpose(-2,0).matmul(reset_gate_).add(reset_gate_bias)\r\n    \r\n    output_gate_ = _input.matmul(output_gate_).add(output_gate_bias)\r\n    input_ = _input.matmul(input_).add(input_bias)\r\n    \r\n    \r\n    cell_state = input_.select(-2,0).arctan().mul(input_gate_.select(-2,0).sigmoid())\r\n    \r\n    hidden_state = norm(cell_state.arctan().mul(output_gate_.select(-2,0).sigmoid()))\r\n\r\n    \r\n    outputs = [hidden_state.unsqueeze(-2)]\r\n    \r\n    for x in range(1,length):\r\n        cell_state = cell_state.mul(reset_gate_.select(-2, x - 1).add(hidden_state.matmul(reset_gate)).sigmoid())\r\n        cell_state = cell_state.addcmul(input_.select(-2,x).add(hidden_state.matmul(core)).arctan(),input_gate_.select(-2,x).add(hidden_state.matmul(input_gate)).sigmoid())\r\n        \r\n        \r\n        hidden_state = norm(cell_state.arctan().mul(output_gate_.select(-2,x).add(hidden_state.matmul(output_gate)).sigmoid()))\r\n        outputs.append(hidden_state.unsqueeze(-2))\r\n        pass\r\n    return torch.cat(outputs, -2).matmul(output_).add(output_bias_).add(_input)\r\n");
+
+		public void L2Regularize(Scalar lambda)
+		{
+			Misc.L2RegularizeIMPL(input, lambda);
+			Misc.L2RegularizeIMPL(core, lambda);
+			Misc.L2RegularizeIMPL(output_gate, lambda);
+			Misc.L2RegularizeIMPL(input_gate_, lambda);
+			Misc.L2RegularizeIMPL(output_gate_, lambda);
+			Misc.L2RegularizeIMPL(input_gate, lambda);
+			Misc.L2RegularizeIMPL(reset_gate, lambda);
+			Misc.L2RegularizeIMPL(reset_gate_, lambda);
+
+		}
+	}
 	public sealed class AOT_KLSTM_Bugfix : Module<Tensor, Tensor>, IL1Regularizable, IL2Regularizable, IL2Regularizable2
 	{
 		private readonly Parameter input;
@@ -1154,6 +1419,85 @@ namespace TinyGPT.Core
 		{
 			Misc.L2RegularizeIMPL(output, lambda);
 		}
+	}
+	public sealed class AOT_KLSTM_v2A : Module<Tensor, Tensor>, IL2Regularizable
+	{
+		private readonly Parameter input;
+
+		private readonly Parameter core;
+		private readonly Parameter core_bias;
+		private readonly Scalar epsilon;
+
+		private readonly Parameter input_gate_;
+		private readonly Parameter input_gate;
+		private readonly Parameter input_gate_bias;
+
+		private readonly Parameter output_gate_;
+		private readonly Parameter output_gate;
+		private readonly Parameter output_gate_bias;
+
+		private readonly Parameter output;
+		private readonly Parameter output_bias;
+
+
+
+
+		private static readonly Scalar two = 2.0;
+		private readonly double regularize;
+		public AOT_KLSTM_v2A(string name, int size, int coresize, double epsilon, double regularize) : base(name)
+		{
+			this.epsilon = epsilon;
+
+			Scalar std = Math.Sqrt(size + coresize);
+			using (no_grad())
+			{
+				input = Parameter(randn(size, coresize).div_(std));
+				input_gate_ = Parameter(randn(size, coresize).div_(std));
+				output_gate_ = Parameter(randn(size, coresize).div_(std));
+
+				core = Parameter(randn(coresize, coresize).div_(std));
+				input_gate = Parameter(randn(coresize, coresize).div_(std));
+				output_gate = Parameter(randn(coresize, coresize).div_(std));
+
+				core_bias = Parameter(zeros(coresize));
+				input_gate_bias = Parameter(zeros(coresize));
+				output_gate_bias = Parameter(zeros(coresize));
+				output_bias = Parameter(zeros(size));
+
+				output = Parameter(randn(coresize, size).div_(Math.Sqrt(coresize)));
+			}
+
+
+
+			RegisterComponents();
+			this.regularize = regularize;
+		}
+		[ThreadStatic]
+		public static bool forceDropoutNonGrad;
+		public override Tensor forward(Tensor input1)
+		{
+			using(NewDisposeScope()){
+				Tensor x = compilationUnit.invoke<Tensor>("aot_klstm_core_nodrop", input_gate, output_gate, core, input_gate_, input_gate_bias, output_gate_, output_gate_bias, input, core_bias, output, output_bias, input1);
+				AOT_SimpleRegularize.ApplyConditional(ref x, regularize);
+				using (x)
+				{
+					return CustomActivations.Norm(x, epsilon).MoveToOuterDisposeScope();
+				}
+			}
+		}
+		private static readonly jit.CompilationUnit compilationUnit = jit.compile("def norm(input : Tensor):\r\n    x = input.sub(input.mean(-1,keepdim=True))\r\n    return x.div(x.mul(x).mean(-1,keepdim=True).sqrt())\r\n    \r\ndef aot_klstm_core_nodrop(input_gate : Tensor,output_gate : Tensor,core : Tensor, input_gate_ : Tensor, input_gate_bias : Tensor, output_gate_ : Tensor, output_gate_bias : Tensor, input_ : Tensor, input_bias : Tensor, output_ : Tensor, output_bias_ : Tensor, _input : Tensor) -> Tensor:\r\n    \r\n    length = _input.size(-2)\r\n    \r\n    input_gate_ = _input.matmul(input_gate_).add(input_gate_bias)\r\n    \r\n    output_gate_ = _input.matmul(output_gate_).add(output_gate_bias)\r\n    input_ = _input.matmul(input_).add(input_bias)\r\n    \r\n    \r\n    cell_state = input_.select(-2,0).arctan().mul(input_gate_.select(-2,0).negative().sigmoid())\r\n    \r\n    hidden_state = norm(cell_state.mul(output_gate_.select(-2,0).sigmoid()))\r\n    if(length == 1):\r\n        return hidden_state.unsqueeze(-2).matmul(output_).add(output_bias_).add(_input)\r\n    \r\n    outputs = [hidden_state.unsqueeze(-2)]\r\n    \r\n    for x in range(1,length):\r\n        gate = input_gate_.select(-2,x).add(hidden_state.matmul(input_gate)).sigmoid()\r\n        cell_state = cell_state.mul(gate).addcmul(input_.select(-2,x).add(hidden_state.matmul(core)).arctan(), gate.sub(1.0).negative())\r\n        hidden_state = norm(cell_state.mul(output_gate_.select(-2,x).add(hidden_state.matmul(output_gate)).sigmoid()))\r\n        outputs.append(hidden_state.unsqueeze(-2))\r\n        pass\r\n    return torch.cat(outputs, -2).matmul(output_).add(output_bias_).add(_input)\r\n");
+
+		public void L2Regularize(Scalar lambda)
+		{
+			Misc.L2RegularizeIMPL(input, lambda);
+			Misc.L2RegularizeIMPL(core, lambda);
+			Misc.L2RegularizeIMPL(output_gate, lambda);
+			Misc.L2RegularizeIMPL(input_gate_, lambda);
+			Misc.L2RegularizeIMPL(output_gate_, lambda);
+			Misc.L2RegularizeIMPL(input_gate, lambda);
+
+		}
+
 	}
 	public sealed class AOT_KLSTM_Peephole : Module<Tensor, Tensor>, IL1Regularizable, IL2Regularizable, IL2Regularizable2
 	{
@@ -1342,23 +1686,32 @@ namespace TinyGPT.Core
 	public sealed class AOT_SimpleRegularize : autograd.SingleTensorFunction<AOT_SimpleRegularize>
 	{
 		public override string Name => "AOTSimpleRegularize";
-		public AOT_SimpleRegularize(){ regularization = 0.0; }
-		private readonly Scalar regularization;
+		public AOT_SimpleRegularize(){ }
 		public AOT_SimpleRegularize(double regularization){
-			this.regularization = regularization;
 		}
 
 		public override List<Tensor> backward(autograd.AutogradContext ctx, Tensor grad_output)
 		{
-			return new List<Tensor>() { grad_output.add_(regularization) };
+#pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type.
+			using (grad_output) using (ctx) return new List<Tensor>() { grad_output.add(ctx.get_saved_variables()[0]), null };
+#pragma warning restore CS8625 // Cannot convert null literal to non-nullable reference type.
 		}
 
 		public override Tensor forward(autograd.AutogradContext ctx, params object[] vars)
 		{
-			if (vars.Length != 1) throw new Exception("AOT Simple Regularize requires exactly one variable!");
+			if (vars.Length != 2) throw new Exception("AOT Simple Regularize requires exactly one variable!");
+
 			Tensor t = (Tensor)vars[0];
-			ctx.save_for_backward(new List<Tensor>() { t });
+			ctx.save_for_backward(new List<Tensor>() { t.mul((double)vars[1]) });
+			
+			//HACK: Create view to keep autograd happy
 			return t.slice(0, 0, t.size(0), 1);
+		}
+		public static void ApplyConditional(ref Tensor tensor,double alpha){
+			if(alpha > 0){
+				using Tensor x = tensor;
+				tensor = apply(x, alpha);
+			}
 		}
 	}
 	public sealed class TinyMGU : Module<Tensor, Tensor>, IL1Regularizable, IL2Regularizable

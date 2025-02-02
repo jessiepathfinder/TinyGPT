@@ -161,6 +161,18 @@ namespace TinyGPT.Chatbot
 						loadSPD = true;
 					}
 					break;
+				case "nano-v1_6":
+					{
+						const int latentTokenSize = 2048;
+						maxcontext = 1025;
+						const int attentionHeads = 16;
+						const int firstTierAttentionDepth = 5;
+						magicTokenClasses = 3;
+						tokenclasses += magicTokenClasses + 1;
+						themodel = new GPTDecoderUnitV1_6("", latentTokenSize, attentionHeads, firstTierAttentionDepth, 1e-7, 1.0, 1.0, tokenclasses, 1.0, 128, 0.0, 1, 2048, 1, new SimpleAttention("", torch.empty(tokenclasses, latentTokenSize), torch.empty(latentTokenSize, tokenclasses)), torch.empty(tokenclasses, latentTokenSize), 1e-5, 1024);
+						loadSPD = true;
+					}
+					break;
 				case "nano-v1_2":
 
 					{

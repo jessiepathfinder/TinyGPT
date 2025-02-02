@@ -28,7 +28,7 @@ namespace TinyGPT.DecoderV1.Trainer
 		private const int targetUnlabeledTokensPerBatch = 65536;
 		private const int targetLabeledTokensPerBatch = 65536;
 		private const int attentionHeads = 16;
-		private const int firstTierAttentionDepth = 4;
+		private const int firstTierAttentionDepth = 5;
 		private const int magicTokenClasses = 3;
 		private const int minimumInputTokens = 2;
 		//private const int maxOutputBlockSize = 128;
@@ -357,7 +357,6 @@ namespace TinyGPT.DecoderV1.Trainer
 			Scalar stk = tokenclasses;
 			//Scalar wordEmbeddingMomentum = 0.9;
 
-			
 
 
 
@@ -367,12 +366,14 @@ namespace TinyGPT.DecoderV1.Trainer
 			SimpleAttention simpleAttention = new SimpleAttention("", torch.empty(tokenclasses, latentTokenSize, bfloat16, CPU), torch.empty(latentTokenSize, tokenclasses, bfloat16, CPU));
 			simpleAttention.load(datadir + "simpleattention.model");
 
-			GPTDecoderUnitV1_5 notchatgpt = new GPTDecoderUnitV1_5("", latentTokenSize, attentionHeads, firstTierAttentionDepth, 1e-7, 1.0, 1.0, tokenclasses, 1.0, 128, 0.25, 2, 2048, load(datadir + "word2vecng_v2.model"), simpleAttention, 1, 0.125, 0.98);
+			GPTDecoderUnitV1_6 notchatgpt = new GPTDecoderUnitV1_6("", latentTokenSize, attentionHeads, firstTierAttentionDepth, 1e-7, 1.0, 1.0, tokenclasses, 1.0, 128, 0.125, 1, 2048, 1, simpleAttention, load(datadir + "word2vecng_v2.model"), 1e-5, 1024);
+			
 			//Parameter hashedDecoderEngine = nn.Parameter(randn(latentTokenSize, latentTokenSize, ScalarType.BFloat16, CUDA).mul_(1.0 / Math.Sqrt(latentTokenSize)),true);
 
 			//Dropout dropout = torch.nn.Dropout(0.25);
 
 			notchatgpt.to(CUDA, ScalarType.BFloat16);
+			notchatgpt.ApplyWordEmbeddingsHack();
 
 
 			ReadOnlyMemory<(ushort, double)>[] readOnlyMemories;
@@ -537,8 +538,7 @@ namespace TinyGPT.DecoderV1.Trainer
 
 				Console.WriteLine("Applying regularization...");
 				//nn.utils.clip_grad_value_(parameters, 1);
-				//notchatgpt.L2Regularize(1e-4);
-				notchatgpt.L2RegularizeSkipAttn(1e-4);
+				notchatgpt.L2Regularize(1e-4);
 
 
 				using (no_grad())
